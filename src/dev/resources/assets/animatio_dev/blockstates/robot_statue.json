@@ -1,0 +1,1 @@
+{ "variants": { "facing=north": { "model": "animatio_dev:block/robot_statue" }, "facing=south": { "model": "animatio_dev:block/robot_statue" }, "facing=east": { "model": "animatio_dev:block/robot_statue" }, "facing=west": { "model": "animatio_dev:block/robot_statue" } } }

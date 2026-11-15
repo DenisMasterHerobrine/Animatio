@@ -1,0 +1,61 @@
+{
+  "clips": {
+    "idle": { "loop": true },
+    "walk": {
+      "loop": true,
+      "events": [
+        { "time": 0.25, "type": "animatio:sound", "sound": "minecraft:block.metal.step", "volume": 0.25, "pitch_variance": 0.1, "bone": "leg_l" },
+        { "time": 0.75, "type": "animatio:sound", "sound": "minecraft:block.metal.step", "volume": 0.25, "pitch_variance": 0.1, "bone": "leg_r" }
+      ]
+    },
+    "run": {
+      "loop": true,
+      "events": [
+        { "time": 0.15, "type": "animatio:sound", "sound": "minecraft:block.metal.step", "volume": 0.35, "pitch": 1.2, "bone": "leg_l" },
+        { "time": 0.45, "type": "animatio:sound", "sound": "minecraft:block.metal.step", "volume": 0.35, "pitch": 1.2, "bone": "leg_r" }
+      ]
+    },
+    "jump": {
+      "events": [
+        { "time": 0.2, "type": "animatio:particle", "particle": { "type": "minecraft:poof" }, "count": 6, "spread": [0.3, 0.05, 0.3], "speed": 0.05, "bone": "root" }
+      ]
+    },
+    "attack": {
+      "events": [
+        { "time": 0.3, "type": "animatio:sound", "sound": "minecraft:entity.player.attack.sweep", "volume": 0.6 }
+      ]
+    },
+    "wave": {
+      "events": [
+        { "time": 0.5, "type": "animatio:custom", "id": "animatio_dev:hearts", "data": "3" }
+      ]
+    }
+  },
+  "blend_spaces": {
+    "locomotion": {
+      "parameter": "speed",
+      "smoothing": 0.15,
+      "samples": [
+        { "x": 0, "clip": "idle" },
+        { "x": 2.0, "clip": "walk" },
+        { "x": 5.5, "clip": "run" }
+      ]
+    }
+  },
+  "transitions": {
+    "default": 0.2,
+    "pairs": [
+      { "from": "fall", "to": "get_up", "duration": 0.35 }
+    ]
+  },
+  "sockets": {
+    "right_hand": { "bone": "hand_r", "offset": [0, 0.05, 0] },
+    "left_hand": { "bone": "hand_l", "offset": [0, 0.05, 0] }
+  },
+  "materials": {
+    "eyes": { "render_type": "emissive" }
+  },
+  "render": {
+    "shadow_radius": 0.45
+  }
+}

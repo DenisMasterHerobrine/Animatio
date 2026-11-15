@@ -1,0 +1,15 @@
+{
+  "model": "animatio_dev:robot",
+  "death_flip": false,
+  "driver": {
+    "locomotion": "locomotion",
+    "attack": "attack",
+    "hurt": "hurt",
+    "death": "death"
+  },
+  "attachments": [
+    { "bone": "right_hand", "type": "held_item", "arm": "right" },
+    { "bone": "left_hand", "type": "held_item", "arm": "left" },
+    { "bone": "head", "type": "armor", "slot": "head", "piece": "head" }
+  ]
+}
