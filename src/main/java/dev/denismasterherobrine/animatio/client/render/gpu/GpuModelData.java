@@ -34,8 +34,11 @@ public final class GpuModelData implements AutoCloseable {
     final int vao;
     private final int vbo;
     final int ebo;
-    /** VAO over the transform-feedback output with this model's index buffer ({@link FeedbackSkinner}), 0 until used. */
-    int feedbackVao;
+    /**
+     * VAOs over the transform-feedback output with this model's index buffer ({@link FeedbackSkinner}), by output
+     * layout id; 0 until used.
+     */
+    int[] feedbackVaos = new int[0];
     /** Per part: first index (in indices) and index count. */
     final int[] firstIndex;
     final int[] indexCount;
@@ -49,10 +52,14 @@ public final class GpuModelData implements AutoCloseable {
     /** Texture buffer with the morph deltas (0 if the model has none) and its storage. */
     final int morphTexture;
     private final int morphBuffer;
+    private final List<GltfModel.Part> parts;
+    /** Texture buffer of {@link SurfaceFrames} (two RGBA32F texels per vertex) and its storage; 0 until a pack needs it. */
+    private int framesTexture, framesBuffer;
     private boolean closed;
 
-    private GpuModelData(int vao, int vbo, int ebo, int[] firstIndex, int[] indexCount, int[] firstVertex, int[] morphBase,
-                         int[] morphTargets, int[] morphVertices, int[] morphWeightOffset, int morphTexture, int morphBuffer) {
+    private GpuModelData(List<GltfModel.Part> parts, int vao, int vbo, int ebo, int[] firstIndex, int[] indexCount, int[] firstVertex,
+                         int[] morphBase, int[] morphTargets, int[] morphVertices, int[] morphWeightOffset, int morphTexture, int morphBuffer) {
+        this.parts = parts;
         this.vao = vao;
         this.vbo = vbo;
         this.ebo = ebo;
@@ -186,7 +193,7 @@ public final class GpuModelData implements AutoCloseable {
                 GL31.glTexBuffer(GL31.GL_TEXTURE_BUFFER, GL30.GL_RGBA32F, morphBuffer);
                 GL11.glBindTexture(GL31.GL_TEXTURE_BUFFER, 0);
             }
-            return new GpuModelData(vao, vbo, ebo, first, count, firstVertex, morphBase, morphTargets, morphVertices,
+            return new GpuModelData(parts, vao, vbo, ebo, first, count, firstVertex, morphBase, morphTargets, morphVertices,
                     morphWeightOffset, morphTexture, morphBuffer);
         } finally {
             MemoryUtil.memFree(vb);
@@ -198,6 +205,33 @@ public final class GpuModelData implements AutoCloseable {
     /** True if the part has morph targets on the GPU. */
     boolean hasMorphs(int part) {
         return morphBase[part] >= 0;
+    }
+
+    /**
+     * The texture buffer of per-vertex tangents and mid texture coordinates ({@link SurfaceFrames}), indexed like the
+     * vertex buffer, built on first use (render thread). Only shader packs read these.
+     */
+    int framesTexture() {
+        if (framesTexture != 0 || closed) return framesTexture;
+        int vertices = 0;
+        for (GltfModel.Part p : parts) vertices += p.mesh().vertexCount();
+        FloatBuffer fb = MemoryUtil.memAllocFloat(Math.max(1, vertices) * SurfaceFrames.FLOATS_PER_VERTEX);
+        try {
+            for (GltfModel.Part p : parts) fb.put(SurfaceFrames.compute(p.mesh(), p.quads()));
+            if (vertices == 0) fb.put(new float[SurfaceFrames.FLOATS_PER_VERTEX]);
+            fb.flip();
+            framesBuffer = GL15.glGenBuffers();
+            GL15.glBindBuffer(GL31.GL_TEXTURE_BUFFER, framesBuffer);
+            GL15.glBufferData(GL31.GL_TEXTURE_BUFFER, fb, GL15.GL_STATIC_DRAW);
+            GL15.glBindBuffer(GL31.GL_TEXTURE_BUFFER, 0);
+            framesTexture = GlStateManager._genTexture();
+            GL11.glBindTexture(GL31.GL_TEXTURE_BUFFER, framesTexture);
+            GL31.glTexBuffer(GL31.GL_TEXTURE_BUFFER, GL30.GL_RGBA32F, framesBuffer);
+            GL11.glBindTexture(GL31.GL_TEXTURE_BUFFER, 0);
+        } finally {
+            MemoryUtil.memFree(fb);
+        }
+        return framesTexture;
     }
 
     private static void enable(int attribute) {
@@ -216,14 +250,17 @@ public final class GpuModelData implements AutoCloseable {
     public void close() {
         if (closed) return;
         closed = true;
-        int texture = morphTexture, buffer = morphBuffer, feedback = feedbackVao;
+        int texture = morphTexture, buffer = morphBuffer, frames = framesTexture, framesStorage = framesBuffer;
+        int[] feedback = feedbackVaos.clone();
         RenderSystem.recordRenderCall(() -> {
             GL30.glDeleteVertexArrays(vao);
             GL15.glDeleteBuffers(vbo);
             GL15.glDeleteBuffers(ebo);
             if (texture != 0) GlStateManager._deleteTexture(texture);
             if (buffer != 0) GL15.glDeleteBuffers(buffer);
-            if (feedback != 0) GL30.glDeleteVertexArrays(feedback);
+            if (frames != 0) GlStateManager._deleteTexture(frames);
+            if (framesStorage != 0) GL15.glDeleteBuffers(framesStorage);
+            for (int v : feedback) if (v != 0) GL30.glDeleteVertexArrays(v);
         });
     }
 }

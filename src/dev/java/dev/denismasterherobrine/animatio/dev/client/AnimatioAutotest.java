@@ -2,7 +2,9 @@ package dev.denismasterherobrine.animatio.dev.client;
 
 import dev.denismasterherobrine.animatio.client.AnimatioClientConfig;
 import dev.denismasterherobrine.animatio.client.render.RenderStats;
+import dev.denismasterherobrine.animatio.client.render.gpu.FeedbackSkinner;
 import dev.denismasterherobrine.animatio.client.render.gpu.GpuRenderer;
+import dev.denismasterherobrine.animatio.client.render.gpu.IrisCompat;
 import dev.denismasterherobrine.animatio.common.ControllerTicker;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.Screenshot;
@@ -68,8 +70,70 @@ final class AnimatioAutotest {
     private static void screenshot(String name) {
         Minecraft mc = Minecraft.getInstance();
         Screenshot.grab(mc.gameDirectory, name, mc.getMainRenderTarget(), msg -> LOGGER.info("{}", msg.getString()));
-        LOGGER.info("Screenshot {} | GPU active: {} | {} | client controllers: {}", name,
-                GpuRenderer.isActive(), GpuRenderer.stats(), ControllerTicker.clientCount());
+        LOGGER.info("Screenshot {} | GPU active: {} | {} | client controllers: {}{}", name,
+                GpuRenderer.isActive(), GpuRenderer.stats(), ControllerTicker.clientCount(),
+                IrisCompat.isPresent() ? " | shader pack: " + IrisCompat.isShaderPackInUse() + " | " + FeedbackSkinner.stats() : "");
+    }
+
+    /** Turn the shader pack on or off through Iris' public API (reloads the pipeline). */
+    private static void setShaders(boolean enabled) {
+        try {
+            Class<?> api = Class.forName("net.irisshaders.iris.api.v0.IrisApi");
+            Object config = api.getMethod("getConfig").invoke(api.getMethod("getInstance").invoke(null));
+            config.getClass().getMethod("setShadersEnabledAndApply", boolean.class).invoke(config, enabled);
+            LOGGER.info("Shader pack {}", enabled ? "enabled" : "disabled");
+        } catch (ReflectiveOperationException | LinkageError e) {
+            LOGGER.error("Could not toggle the shader pack", e);
+        }
+    }
+
+    /** Option values of the test pack, read by Iris whenever it reloads the pack. */
+    private static java.nio.file.Path packOptions() {
+        return Minecraft.getInstance().gameDirectory.toPath().resolve("shaderpacks").resolve("AnimatioTest.txt");
+    }
+
+    /** Switch the test pack's false-colour attribute view (DEBUG_VIEW) on or off; applies on the next reload. */
+    private static void setDebugView(boolean on) {
+        try {
+            if (on) java.nio.file.Files.writeString(packOptions(), "DEBUG_VIEW=1\n");
+            else java.nio.file.Files.deleteIfExists(packOptions());
+        } catch (java.io.IOException e) {
+            LOGGER.error("Could not write the test pack options", e);
+        }
+    }
+
+    /**
+     * Extra steps with Iris (when no benchmark follows): a fresh group of robots with the pack on, the pack off
+     * (the instanced GPU path with Iris and Sodium loaded), on again (the pack's pipeline is rebuilt), and finally the
+     * pack's attribute view on the GPU and CPU paths (ids, tangents, mid texture coordinates).
+     */
+    private static void irisStep() {
+        switch (ticks) {
+            case 108 -> {
+                command("tp @s 0.5 -60 0.5 0 12");
+                command("animatio_dev spawn 9");
+            }
+            case 113 -> command("data merge entity @e[type=animatio_dev:robot] {NoAI:1b}");
+            case 120 -> screenshot("animatio_autotest_iris_pack.png");
+            case 121 -> setShaders(false);
+            case 141 -> screenshot("animatio_autotest_iris_off.png");
+            case 142 -> setShaders(true);
+            case 162 -> screenshot("animatio_autotest_iris_on_again.png");
+            case 163 -> {
+                setDebugView(true);
+                setShaders(true);
+            }
+            case 183 -> screenshot("animatio_autotest_iris_debug_gpu.png");
+            case 184 -> AnimatioClientConfig.setGpuSkinning(false);
+            case 189 -> screenshot("animatio_autotest_iris_debug_cpu.png");
+            case 190 -> {
+                AnimatioClientConfig.setGpuSkinning(true);
+                setDebugView(false);
+                finish();
+            }
+            default -> {
+            }
+        }
     }
 
     private static void onTick(ClientTickEvent.Post event) {
@@ -79,6 +143,10 @@ final class AnimatioAutotest {
         mc.options.pauseOnLostFocus = false;
         if (mc.screen instanceof net.minecraft.client.gui.screens.PauseScreen) mc.setScreen(null);
         ticks++;
+        if (ticks >= 108 && PERF_COUNT <= 0 && IrisCompat.isPresent()) {
+            irisStep();
+            return;
+        }
         switch (ticks) {
             case 20 -> {
                 mc.options.hideGui = true;

@@ -231,10 +231,14 @@ cape). Map them to your bones with `sockets` in the model definition.
   registers, morph targets are applied from sparse per-target vertex lists, and both batchers keep draws in
   parallel primitive arrays (sort keys, counting sort) so a frame allocates nothing once warmed up.
 * **Shader packs (Iris/Oculus).** Detected through Iris' public API. While a pack is active, opaque and cutout parts
-  are skinned on the GPU by a transform-feedback pass that writes ordinary `NEW_ENTITY` vertices, which are then
-  drawn with the part's render type through the program the pack installs (shadow passes included). Translucent
-  materials and emissive layers use the CPU path. Custom material shaders do not apply under a pack; texture, tint,
-  emissive and hidden overrides still do.
+  are skinned on the GPU by a transform-feedback pass and drawn with the part's render type through the program the
+  pack installs (shadow passes included). The pass writes the vertex layout that program was built for: with Iris
+  that is its extended entity format, so packs get the entity/block-entity/item ids from their
+  `entity.properties`-style mappings (`entityId`, `blockEntityId`, `currentRenderedItemId`), `mc_midTexCoord` and
+  `at_tangent` (computed once per mesh with Iris' conventions and skinned with the normal), as for vanilla entities.
+  Smooth normals are kept. Translucent materials and emissive layers use the CPU path, which Iris extends itself.
+  Custom material shaders (such as the dissolve effect) do not apply under a pack; texture, tint, emissive and hidden
+  overrides still do.
 
 ## Performance
 
@@ -270,7 +274,7 @@ Gradle needs JDK 21.
 | `./gradlew test` | Unit tests: parser, sampling (the flattened sampler against per-channel sampling), sequences, layering, cross-fades, blend spaces, events, replication, network codecs, morph targets, cameras, lights, look-at, Draco (against the uncompressed model) and KTX2 (ETC1S and UASTC against the lossless image). |
 | `./gradlew runGameTestServer` | Server-side integration tests with the dev robot (model loading from mod files, sync snapshot, timing, runtime models). |
 | `./gradlew runAutotestClient` | Unattended client run. It creates a flat world, takes screenshots (instanced GPU, CPU, transform feedback, morph targets, dissolve, held items, a player drawn with the robot model, the view through a model camera) into `run/screenshots/`, benchmarks GPU/CPU paths with serial vs parallel poses, and quits. `-PperfCount=1000` sets the robot count; `-PheavyRobots=true` uses the 59-bone variant. Results go to `run/logs/latest.log` (`PERF` lines). |
-| `./gradlew runIrisAutotestClient` | The same with Iris, Sodium and a test shader pack, in the separate game directory `run-iris` (not in git): put the Iris and Sodium NeoForge 1.21.1 jars in `run-iris/mods`, and a pack in `run-iris/shaderpacks/AnimatioTest` selected by `run-iris/config/iris.properties`. |
+| `./gradlew runIrisAutotestClient` | The same with Iris, Sodium and the test shader pack, in the separate game directory `run-iris` (not in git): put the Iris and Sodium NeoForge 1.21.1 jars in `run-iris/mods` and select `AnimatioTest` in `run-iris/config/iris.properties`. The pack in `src/dev/shaderpacks/AnimatioTest` is copied in before the run; it shades entities normally and casts shadows. The run then turns the pack off (instanced GPU path with Iris and Sodium loaded) and on again, and ends with the pack's `DEBUG_VIEW` option on for two screenshots (`animatio_autotest_iris_debug_gpu/cpu.png`): false-colour stripes of id tint, tangent direction, and mid-texture-coordinate distance with an id code, to compare what the GPU and CPU paths give the pack. These stripes are intentional, not a rendering glitch. |
 | `./gradlew test -PincludeBenchmarks --tests "*Benchmark*" -i` | Single-thread throughput of the CPU skinning kernel. |
 | `./gradlew runClient` | Normal dev client with the `animatio_dev` content. |
 | `./gradlew generateDebugRobot` | Regenerates the dev robot models (normal and 59-bone heavy) and the GameTest structure. |
@@ -282,8 +286,9 @@ Gradle needs JDK 21.
   through `AnimatioClientApi.lights`. Animating light colour or intensity (`KHR_animation_pointer`) is not supported.
 * KTX2: the base mip level of 2D textures is used; UASTC HDR, ASTC/BC/ETC2 `vkFormat`s and 16/32-bit formats are
   not decoded.
-* Shader packs: custom material shaders, translucent materials and emissive layers use the CPU path; the GPU path
-  leaves the pack's extra vertex attributes (`mc_Entity`-style ids, tangents) at their defaults.
+* Shader packs: custom material shaders (including the dissolve effect) do not apply; translucent materials and
+  emissive layers use the CPU path. A vertex shared by several faces gets the average of their mid texture
+  coordinates (box models share none, so they match what Iris computes).
 * Item stacks: stacks with an animation identity no longer stack with stacks without one, and item animations fire no
   events (sounds, particles).
 * Player models replace the body in the world; first-person arms stay vanilla.

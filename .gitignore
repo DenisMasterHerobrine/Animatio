@@ -22,3 +22,4 @@ run
 
 # isolated shader-pack test run (Iris/Sodium jars, test pack)
 run-iris
+/logs/
