@@ -18,6 +18,7 @@ public final class AnimatioClientConfig {
     private static volatile boolean parallelPoses = true;
     private static volatile boolean batchCpuPath = true;
     private static volatile int workerThreads = -1;
+    private static volatile boolean forceFeedback = Boolean.getBoolean("animatio.forceFeedbackSkinning");
 
     static {
         ModConfigSpec.Builder b = new ModConfigSpec.Builder();
@@ -69,6 +70,18 @@ public final class AnimatioClientConfig {
 
     public static void setBatchCpuPath(boolean enabled) {
         batchCpuPath = enabled;
+    }
+
+    /**
+     * Use transform-feedback GPU skinning (the shader-pack path) even without a shader pack, instead of instanced
+     * batches. For testing; runtime only ({@code -Danimatio.forceFeedbackSkinning=true}).
+     */
+    public static boolean forceFeedbackSkinning() {
+        return forceFeedback;
+    }
+
+    public static void setForceFeedbackSkinning(boolean force) {
+        forceFeedback = force;
     }
 
     /** -1 = automatic. */

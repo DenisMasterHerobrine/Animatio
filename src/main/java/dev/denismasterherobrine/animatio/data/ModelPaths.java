@@ -3,7 +3,8 @@ package dev.denismasterherobrine.animatio.data;
 import net.minecraft.resources.ResourceLocation;
 
 /**
- * Where model files live: {@code assets/<namespace>/animatio/models/<path>.glb} (or {@code .gltf}), with an
+ * Where model files live: {@code assets/<namespace>/animatio/models/<path>.glb} (or {@code .gltf}, or a Blockbench
+ * project {@code .bbmodel}), with an
  * optional {@code <path>.anim.json} definition next to it.
  */
 public final class ModelPaths {
@@ -20,6 +21,18 @@ public final class ModelPaths {
         return model.withPath(DIRECTORY + "/" + model.getPath() + ".gltf");
     }
 
+    public static ResourceLocation bbmodel(ResourceLocation model) {
+        return model.withPath(DIRECTORY + "/" + model.getPath() + ".bbmodel");
+    }
+
+    /** Load a model file of any supported kind (glTF, GLB or Blockbench project) by its file name. */
+    public static dev.denismasterherobrine.animatio.gltf.ModelData load(String id, String fileName, byte[] data, boolean geometry,
+                                                                       java.util.function.Function<String, byte[]> resolver)
+            throws dev.denismasterherobrine.animatio.gltf.GltfException {
+        if (fileName.endsWith(".bbmodel")) return dev.denismasterherobrine.animatio.blockbench.BbmodelLoader.load(id, data, geometry, resolver);
+        return dev.denismasterherobrine.animatio.gltf.GltfLoader.load(id, data, geometry, resolver);
+    }
+
     public static ResourceLocation definition(ResourceLocation model) {
         return model.withPath(DIRECTORY + "/" + model.getPath() + ".anim.json");
     }
@@ -31,6 +44,7 @@ public final class ModelPaths {
         String rest = path.substring(DIRECTORY.length() + 1);
         if (rest.endsWith(".glb")) return file.withPath(rest.substring(0, rest.length() - 4));
         if (rest.endsWith(".gltf")) return file.withPath(rest.substring(0, rest.length() - 5));
+        if (rest.endsWith(".bbmodel")) return file.withPath(rest.substring(0, rest.length() - 8));
         return null;
     }
 

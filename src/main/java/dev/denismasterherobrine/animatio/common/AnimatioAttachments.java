@@ -1,5 +1,6 @@
 package dev.denismasterherobrine.animatio.common;
 
+import com.mojang.serialization.Codec;
 import dev.denismasterherobrine.animatio.Animatio;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.neoforge.attachment.AttachmentType;
@@ -14,6 +15,13 @@ public final class AnimatioAttachments {
     /** Transient (not saved): animation state is rebuilt by game logic after loading. */
     public static final Supplier<AttachmentType<ControllerHolder>> CONTROLLER = TYPES.register("controller",
             () -> AttachmentType.builder(ControllerHolder::create).build());
+
+    /**
+     * Model chosen at runtime for one entity (see {@code AnimatioApi.setModel}), as a resource location string;
+     * empty when none. Saved with the entity and kept by players across death.
+     */
+    public static final Supplier<AttachmentType<String>> ENTITY_MODEL = TYPES.register("entity_model",
+            () -> AttachmentType.builder(() -> "").serialize(Codec.STRING).copyOnDeath().build());
 
     private AnimatioAttachments() {
     }

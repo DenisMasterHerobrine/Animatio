@@ -91,16 +91,77 @@ public final class Mat4 {
         out[oo + 2] = rz;
     }
 
+    /**
+     * The rotation of an affine matrix (scale removed per axis) as a unit quaternion x, y, z, w at {@code out[oo]}.
+     * Mirrored matrices give the rotation of the matrix with its X axis flipped.
+     */
+    public static void rotationOf(float[] m, int o, float[] out, int oo) {
+        float sx = len(m[o], m[o + 1], m[o + 2]), sy = len(m[o + 4], m[o + 5], m[o + 6]), sz = len(m[o + 8], m[o + 9], m[o + 10]);
+        if (sx < 1e-12f || sy < 1e-12f || sz < 1e-12f) {
+            out[oo] = 0f;
+            out[oo + 1] = 0f;
+            out[oo + 2] = 0f;
+            out[oo + 3] = 1f;
+            return;
+        }
+        float m00 = m[o] / sx, m10 = m[o + 1] / sx, m20 = m[o + 2] / sx;
+        float m01 = m[o + 4] / sy, m11 = m[o + 5] / sy, m21 = m[o + 6] / sy;
+        float m02 = m[o + 8] / sz, m12 = m[o + 9] / sz, m22 = m[o + 10] / sz;
+        // det < 0: flip X so the basis is a proper rotation
+        if (m00 * (m11 * m22 - m21 * m12) - m01 * (m10 * m22 - m20 * m12) + m02 * (m10 * m21 - m20 * m11) < 0f) {
+            m00 = -m00;
+            m10 = -m10;
+            m20 = -m20;
+        }
+        float x, y, z, w;
+        float trace = m00 + m11 + m22;
+        if (trace > 0f) {
+            float s = (float) Math.sqrt(trace + 1f) * 2f;
+            w = 0.25f * s;
+            x = (m21 - m12) / s;
+            y = (m02 - m20) / s;
+            z = (m10 - m01) / s;
+        } else if (m00 > m11 && m00 > m22) {
+            float s = (float) Math.sqrt(1f + m00 - m11 - m22) * 2f;
+            w = (m21 - m12) / s;
+            x = 0.25f * s;
+            y = (m01 + m10) / s;
+            z = (m02 + m20) / s;
+        } else if (m11 > m22) {
+            float s = (float) Math.sqrt(1f + m11 - m00 - m22) * 2f;
+            w = (m02 - m20) / s;
+            x = (m01 + m10) / s;
+            y = 0.25f * s;
+            z = (m12 + m21) / s;
+        } else {
+            float s = (float) Math.sqrt(1f + m22 - m00 - m11) * 2f;
+            w = (m10 - m01) / s;
+            x = (m02 + m20) / s;
+            y = (m12 + m21) / s;
+            z = 0.25f * s;
+        }
+        float inv = 1f / (float) Math.sqrt(x * x + y * y + z * z + w * w);
+        out[oo] = x * inv;
+        out[oo + 1] = y * inv;
+        out[oo + 2] = z * inv;
+        out[oo + 3] = w * inv;
+    }
+
+    private static float len(float x, float y, float z) {
+        return (float) Math.sqrt(x * x + y * y + z * z);
+    }
+
     /** Compute model-space (global) matrices for every node of a pose. {@code globals} holds 16 floats per node. */
     public static void computeGlobals(Skeleton skeleton, Pose pose, float[] globals) {
         int[] order = skeleton.order();
+        int[] parents = skeleton.parents();
         float[] t = pose.t, r = pose.r, s = pose.s;
         for (int k = 0; k < order.length; k++) {
             int i = order[k];
             int o = i * 16;
             trs(globals, o, t[i * 3], t[i * 3 + 1], t[i * 3 + 2], r[i * 4], r[i * 4 + 1], r[i * 4 + 2], r[i * 4 + 3],
                     s[i * 3], s[i * 3 + 1], s[i * 3 + 2]);
-            int p = skeleton.parent(i);
+            int p = parents[i];
             if (p >= 0) mulAffine(globals, p * 16, globals, o, globals, o);
         }
     }

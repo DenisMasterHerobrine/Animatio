@@ -164,9 +164,13 @@ public final class DebugRobotGenerator {
         float[] armR = world(ARM_R), armL = world(ARM_L), legR = world(LEG_R), legL = world(LEG_L);
         box(HIPS, -0.27f, hips[1] - 0.05f, -0.15f, 0.27f, hips[1] + 0.08f, 0.15f, DARK, false);
         box(TORSO, -0.27f, torso[1] + 0.08f, -0.16f, 0.27f, torso[1] + 0.7f, 0.16f, BLUE, false);
+        int chestStart = pos.size() / 3;
         box(TORSO, -0.08f, torso[1] + 0.35f, 0.16f, 0.08f, torso[1] + 0.55f, 0.19f, GOLD, false);
+        int chestEnd = pos.size() / 3;
         box(HEAD, -0.25f, head[1], -0.25f, 0.25f, head[1] + 0.5f, 0.25f, GREY, false);
+        int antennaStart = pos.size() / 3;
         box(HEAD, -0.03f, head[1] + 0.5f, -0.03f, 0.03f, head[1] + 0.68f, 0.03f, DARK, false);
+        int antennaEnd = pos.size() / 3;
         box(EYES, -0.16f, eyes[1] - 0.04f, eyes[2] - 0.01f, 0.16f, eyes[1] + 0.04f, eyes[2] + 0.01f, CYAN, true);
         box(ARM_R, armR[0] - 0.08f, armR[1] - 0.62f, -0.08f, armR[0] + 0.08f, armR[1] + 0.04f, 0.08f, DARK, false);
         box(ARM_L, armL[0] - 0.08f, armL[1] - 0.62f, -0.08f, armL[0] + 0.08f, armL[1] + 0.04f, 0.08f, DARK, false);
@@ -236,11 +240,31 @@ public final class DebugRobotGenerator {
         int aJoints = b.ubytes("VEC4", false, jointData);
         int aWeights = b.floats("VEC4", weightData);
         JsonArray primitives = new JsonArray();
+        // morph targets: "antenna" stretches the antenna up, "chest" pushes the chest plate out
+        float[] antenna = new float[vertexCount * 3], chest = new float[vertexCount * 3];
+        float antennaBase = head[1] + 0.5f;
+        for (int v = antennaStart; v < antennaEnd; v++) if (pos.get(v * 3 + 1) > antennaBase + 0.01f) antenna[v * 3 + 1] = 0.35f;
+        for (int v = chestStart; v < chestEnd; v++) if (pos.get(v * 3 + 2) > 0.17f) chest[v * 3 + 2] = 0.12f;
+        JsonArray targets = new JsonArray();
+        JsonObject antennaTarget = new JsonObject();
+        antennaTarget.addProperty("POSITION", b.floats("VEC3", antenna));
+        JsonObject chestTarget = new JsonObject();
+        chestTarget.addProperty("POSITION", b.floats("VEC3", chest));
+        targets.add(antennaTarget);
+        targets.add(chestTarget);
         primitives.add(primitive(b, aPos, aNrm, aUv, aJoints, aWeights, idx, 0));
         primitives.add(primitive(b, aPos, aNrm, aUv, aJoints, aWeights, eyeIdx, 1));
         JsonObject mesh = new JsonObject();
         mesh.addProperty("name", "robot");
+        for (var p : primitives) p.getAsJsonObject().add("targets", targets);
         mesh.add("primitives", primitives);
+        mesh.add("weights", floats(new float[]{0, 0}));
+        JsonObject extras = new JsonObject();
+        JsonArray targetNames = new JsonArray();
+        targetNames.add("antenna");
+        targetNames.add("chest");
+        extras.add("targetNames", targetNames);
+        mesh.add("extras", extras);
         JsonArray meshes = new JsonArray();
         meshes.add(mesh);
         json.add("meshes", meshes);
@@ -274,6 +298,7 @@ public final class DebugRobotGenerator {
         anims.add(attack(b));
         anims.add(hurt(b));
         anims.add(death(b));
+        anims.add(new Anim(b, "antenna").channel(names.length, "weights", "SCALAR", t(0, 0.5f, 1f), new float[]{0, 0, 1, 1, 0, 0}).json());
         json.add("animations", anims);
         return b.build(json);
     }

@@ -8,6 +8,7 @@ import dev.denismasterherobrine.animatio.client.model.ClientModelManager;
 import dev.denismasterherobrine.animatio.client.model.GltfModel;
 import dev.denismasterherobrine.animatio.client.render.AnimatedInstance;
 import dev.denismasterherobrine.animatio.client.render.ClientClock;
+import dev.denismasterherobrine.animatio.client.render.ModelLights;
 import dev.denismasterherobrine.animatio.client.render.ModelRenderer;
 import dev.denismasterherobrine.animatio.common.ControllerHolder;
 import net.minecraft.client.Minecraft;
@@ -89,37 +90,71 @@ public class GltfEntityRenderer<T extends Entity> extends EntityRenderer<T> {
 
     @Override
     public void render(T entity, float entityYaw, float partialTick, PoseStack poseStack, MultiBufferSource buffers, int light) {
+        renderModel(entity, partialTick, poseStack, buffers, light);
+        super.render(entity, entityYaw, partialTick, poseStack, buffers, light);
+    }
+
+    /** The skin texture for materials textured {@code animatio:player_skin}, or {@code null} (players: their skin). */
+    protected @Nullable ResourceLocation skinTexture(T entity) {
+        return entity instanceof net.minecraft.client.player.AbstractClientPlayer player ? player.getSkin().texture() : null;
+    }
+
+    /**
+     * Draw the model and its attachments (everything except vanilla extras such as the name tag). Also updates the
+     * shadow radius and feeds the look-at parameters.
+     *
+     * @return false if the entity has no model
+     */
+    public boolean renderModel(T entity, float partialTick, PoseStack poseStack, MultiBufferSource buffers, int light) {
         ControllerHolder holder = AnimatioApi.holder(entity);
         GltfModel model = model(entity, holder);
-        if (model != null) {
-            AnimatedInstance instance = AnimatedInstance.of(holder);
-            double distance = Math.sqrt(entityRenderDispatcher.distanceToSqr(entity));
-            instance.prepare(holder, model, ClientClock.time(entity.level(), partialTick), distance);
+        if (model == null) return false;
+        AnimatedInstance instance = AnimatedInstance.of(holder);
+        double distance = Math.sqrt(entityRenderDispatcher.distanceToSqr(entity));
+        instance.prepare(holder, model, ClientClock.time(entity.level(), partialTick), distance);
+        if (entity instanceof LivingEntity living && model.animations().look() != null) provideLook(holder, living, partialTick);
 
-            computeRoot(entity, partialTick, model, root);
-            Vec3 pos = entity.getPosition(partialTick);
-            instance.setWorldTransform(pos.x, pos.y, pos.z, root);
+        computeRoot(entity, partialTick, model, root);
+        Vec3 pos = entity.getPosition(partialTick);
+        instance.setWorldTransform(pos.x, pos.y, pos.z, root);
+        instance.setSkinTexture(skinTexture(entity));
 
-            int tint = tint(entity, partialTick);
-            Minecraft mc = Minecraft.getInstance();
-            boolean invisible = entity.isInvisible();
-            boolean ghost = invisible && mc.player != null && !entity.isInvisibleTo(mc.player);
-            if (!invisible || ghost) {
-                if (ghost) tint = (tint & 0x00FFFFFF) | (0x26 << 24);
-                beforeRender(entity, instance, partialTick);
-                int overlay = entity instanceof LivingEntity le ? LivingEntityRenderer.getOverlayCoords(le, 0f) : OverlayTexture.NO_OVERLAY;
-                poseStack.pushPose();
-                poseStack.mulPose(root);
-                ModelRenderer.render(model, instance, poseStack, buffers, light, overlay, tint, ModelRenderer.Context.ENTITY);
-                if (!attachments.isEmpty()) {
-                    AttachmentPoint.renderAll(attachments, entity, holder.controller(), poseStack, buffers, light, overlay, partialTick);
-                }
-                poseStack.popPose();
+        int tint = tint(entity, partialTick);
+        Minecraft mc = Minecraft.getInstance();
+        boolean invisible = entity.isInvisible();
+        boolean ghost = invisible && mc.player != null && !entity.isInvisibleTo(mc.player);
+        if (!invisible || ghost) {
+            if (ghost) tint = (tint & 0x00FFFFFF) | (0x26 << 24);
+            beforeRender(entity, instance, partialTick);
+            int overlay = entity instanceof LivingEntity le ? LivingEntityRenderer.getOverlayCoords(le, 0f) : OverlayTexture.NO_OVERLAY;
+            int lit = ModelLights.light(model, instance, light);
+            poseStack.pushPose();
+            poseStack.mulPose(root);
+            ModelRenderer.render(model, instance, poseStack, buffers, lit, overlay, tint, ModelRenderer.Context.ENTITY);
+            if (!attachments.isEmpty()) {
+                AttachmentPoint.renderAll(attachments, entity, holder.controller(), poseStack, buffers, lit, overlay, partialTick);
             }
-            float scale = entity instanceof LivingEntity le ? le.getScale() : 1f;
-            this.shadowRadius = model.definition().render().shadowRadius() * scale;
+            poseStack.popPose();
         }
-        super.render(entity, entityYaw, partialTick, poseStack, buffers, light);
+        float scale = entity instanceof LivingEntity le ? le.getScale() : 1f;
+        this.shadowRadius = model.definition().render().shadowRadius() * scale;
+        return true;
+    }
+
+    /** Head direction relative to the body, for models with a look-at bone (used by the next evaluation). */
+    private static void provideLook(ControllerHolder holder, LivingEntity living, float partialTick) {
+        float bodyYaw = Mth.rotLerp(partialTick, living.yBodyRotO, living.yBodyRot);
+        float headYaw = Mth.rotLerp(partialTick, living.yHeadRotO, living.yHeadRot);
+        var controller = holder.controller();
+        controller.provideParameter(dev.denismasterherobrine.animatio.anim.model.LookConfig.YAW_PARAMETER, Mth.wrapDegrees(headYaw - bodyYaw));
+        controller.provideParameter(dev.denismasterherobrine.animatio.anim.model.LookConfig.PITCH_PARAMETER, living.getViewXRot(partialTick));
+    }
+
+    /** This frame's model-to-world transform: the entity's interpolated position times {@link #computeRoot}. */
+    public void modelToWorld(T entity, float partialTick, GltfModel model, Matrix4f out) {
+        computeRoot(entity, partialTick, model, out);
+        Vec3 pos = entity.getPosition(partialTick);
+        out.translateLocal((float) pos.x, (float) pos.y, (float) pos.z);
     }
 
     /** Entity-relative transform applied before the model: yaw, death tilt, scale and the model's root transform. */

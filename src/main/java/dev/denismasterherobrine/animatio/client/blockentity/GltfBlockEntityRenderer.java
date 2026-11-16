@@ -80,9 +80,10 @@ public class GltfBlockEntityRenderer<T extends BlockEntity> implements BlockEnti
         instance.setWorldTransform(pos.getX(), pos.getY(), pos.getZ(), root);
         poseStack.pushPose();
         poseStack.mulPose(root);
-        ModelRenderer.render(model, instance, poseStack, buffers, light, overlay, 0xFFFFFFFF, ModelRenderer.Context.BLOCK_ENTITY);
+        int lit = dev.denismasterherobrine.animatio.client.render.ModelLights.light(model, instance, light);
+        ModelRenderer.render(model, instance, poseStack, buffers, lit, overlay, 0xFFFFFFFF, ModelRenderer.Context.BLOCK_ENTITY);
         if (!attachments.isEmpty()) {
-            AttachmentPoint.renderAll(attachments, blockEntity, holder.controller(), poseStack, buffers, light, overlay, partialTick);
+            AttachmentPoint.renderAll(attachments, blockEntity, holder.controller(), poseStack, buffers, lit, overlay, partialTick);
         }
         poseStack.popPose();
     }

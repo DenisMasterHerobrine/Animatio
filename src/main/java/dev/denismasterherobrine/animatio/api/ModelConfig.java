@@ -23,6 +23,7 @@ import java.util.Map;
  * from common code, so the server and the client agree.
  */
 public final class ModelConfig {
+    private @Nullable LookSettings look;
     public record SocketConfig(String bone, Matrix4fc offset) {
     }
 
@@ -71,6 +72,22 @@ public final class ModelConfig {
     public ModelConfig socket(String name, String bone, @Nullable Matrix4fc offset) {
         sockets.put(name, new SocketConfig(bone, offset == null ? new Matrix4f() : new Matrix4f(offset)));
         return this;
+    }
+
+    /**
+     * Turn {@code bone} toward where the entity looks (head yaw relative to the body, and pitch), clamped to the given
+     * limits in degrees, after animations are applied. Client side, from the entity's head rotation.
+     */
+    public ModelConfig look(String bone, float maxYawDegrees, float maxPitchDegrees) {
+        this.look = new LookSettings(bone, maxYawDegrees, maxPitchDegrees, 1f);
+        return this;
+    }
+
+    public record LookSettings(String bone, float maxYaw, float maxPitch, float weight) {
+    }
+
+    public @Nullable LookSettings look() {
+        return look;
     }
 
     public Map<String, Boolean> loops() {

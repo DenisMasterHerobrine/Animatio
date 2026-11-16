@@ -75,6 +75,9 @@ final class AnimatioAutotest {
     private static void onTick(ClientTickEvent.Post event) {
         Minecraft mc = Minecraft.getInstance();
         if (mc.player == null || mc.level == null || mc.screen != null && ticks == 0) return;
+        // unattended: never stop for the pause menu when the window loses focus
+        mc.options.pauseOnLostFocus = false;
+        if (mc.screen instanceof net.minecraft.client.gui.screens.PauseScreen) mc.setScreen(null);
         ticks++;
         switch (ticks) {
             case 20 -> {
@@ -91,6 +94,9 @@ final class AnimatioAutotest {
                 command("data merge entity @e[type=animatio_dev:robot,limit=3,sort=nearest] {NoAI:1b}");
                 command("execute as @e[type=animatio_dev:robot,limit=3,sort=nearest] at @s run tp @s ~ ~ ~ 180 0");
                 command("animatio play @e[type=animatio_dev:robot,limit=2,sort=furthest] wave");
+                // morph targets on the three front robots: the antenna stretches up, the chest plate pushes out
+                command("animatio morph @e[type=animatio_dev:robot,limit=3,sort=nearest] antenna 1");
+                command("animatio morph @e[type=animatio_dev:robot,limit=3,sort=nearest] chest 1");
                 // vanilla mob replaced by a resource-pack entity override (entity_overrides/minecraft/husk.json)
                 command("summon minecraft:husk -3 -60 5 {NoAI:1b,Rotation:[200f,0f],"
                         + "ArmorItems:[{},{},{},{id:\"minecraft:iron_helmet\",count:1}],HandItems:[{id:\"minecraft:iron_axe\",count:1},{}]}");
@@ -98,26 +104,49 @@ final class AnimatioAutotest {
             case 50 -> screenshot("animatio_autotest_gpu.png");
             case 51 -> AnimatioClientConfig.setGpuSkinning(false);
             case 56 -> screenshot("animatio_autotest_cpu.png");
-            case 57 -> {
+            case 57 -> { // GPU skinning via transform feedback (the shader-pack path)
+                AnimatioClientConfig.setGpuSkinning(true);
+                AnimatioClientConfig.setForceFeedbackSkinning(true);
+            }
+            case 62 -> screenshot("animatio_autotest_feedback.png");
+            case 63 -> {
+                AnimatioClientConfig.setForceFeedbackSkinning(false);
                 AnimatioClientConfig.setGpuSkinning(true);
                 command("kill @e[type=animatio_dev:robot]");
             }
-            case 66 -> screenshot("animatio_autotest_dissolve.png");
-            case 68 -> {
+            case 72 -> screenshot("animatio_autotest_dissolve.png");
+            case 74 -> {
                 // held-item reference: a vanilla zombie and a robot side by side, both facing screen-right (west)
                 String gear = "ArmorItems:[{},{},{},{id:\"minecraft:iron_helmet\",count:1}],HandItems:[{id:\"minecraft:diamond_sword\",count:1},{}]";
                 command("summon minecraft:zombie -1.5 -60 4 {NoAI:1b,Silent:1b,Rotation:[90f,0f]," + gear + "}");
                 command("summon animatio_dev:robot 2 -60 4 {NoAI:1b,Silent:1b,Rotation:[90f,0f]," + gear + "}");
             }
-            case 78 -> screenshot("animatio_autotest_hold.png");
-            case 80 -> {
+            case 84 -> screenshot("animatio_autotest_hold.png");
+            case 85 -> {
                 command("kill @e[type=minecraft:zombie]");
+                // the local player drawn with the robot model (third person, from the front)
+                command("tp @s 0.5 -60 -1 180 0");
+                command("animatio model @s animatio_dev:robot");
+                mc.options.setCameraType(net.minecraft.client.CameraType.THIRD_PERSON_FRONT);
+            }
+            case 96 -> screenshot("animatio_autotest_player_model.png");
+            case 97 -> {
+                mc.options.setCameraType(net.minecraft.client.CameraType.FIRST_PERSON);
+                command("animatio model @s reset");
+                // look through the eye camera socket of the robot standing next to the zombie spot
+                command("animatio camera @s @e[type=animatio_dev:robot,limit=1,sort=nearest] eye_camera");
+            }
+            case 106 -> screenshot("animatio_autotest_camera.png");
+            case 107 -> {
+                command("animatio camera @s stop");
+                command("kill @e[type=animatio_dev:robot]");
+                command("kill @e[type=minecraft:husk]");
+            }
+            case 108 -> {
                 if (PERF_COUNT <= 0) {
                     finish();
                     return;
                 }
-                command("kill @e[type=animatio_dev:robot]");
-                command("kill @e[type=minecraft:husk]");
                 command("setblock 3 -60 10 minecraft:air");
                 command("tp @s 0.5 -55 -6 0 25");
                 command("animatio_dev spawn " + PERF_COUNT);
@@ -125,13 +154,13 @@ final class AnimatioAutotest {
                 mc.getWindow().updateVsync(false);
                 mc.options.framerateLimit().set(260);
             }
-            case 90 -> {
+            case 118 -> {
                 command("data merge entity @e[type=animatio_dev:robot] {NoAI:1b}");
                 perfStage = 0;
                 perfTick = ticks + 100; // warm-up: JIT, chunk loading, entities settling
             }
             default -> {
-                if (ticks >= 90 && PERF_COUNT > 0) perfTick();
+                if (ticks >= 118 && PERF_COUNT > 0) perfTick();
             }
         }
     }

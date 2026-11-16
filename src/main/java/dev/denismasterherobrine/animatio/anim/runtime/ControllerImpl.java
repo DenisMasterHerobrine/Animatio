@@ -3,7 +3,9 @@ package dev.denismasterherobrine.animatio.anim.runtime;
 import dev.denismasterherobrine.animatio.anim.math.Mat4;
 import dev.denismasterherobrine.animatio.anim.math.PoseMath;
 import dev.denismasterherobrine.animatio.anim.model.AnimationSet;
+import dev.denismasterherobrine.animatio.anim.model.Channel;
 import dev.denismasterherobrine.animatio.anim.model.ClipInfo;
+import dev.denismasterherobrine.animatio.anim.model.LookConfig;
 import dev.denismasterherobrine.animatio.anim.model.Pose;
 import dev.denismasterherobrine.animatio.anim.model.Skeleton;
 import dev.denismasterherobrine.animatio.anim.model.Socket;
@@ -79,10 +81,16 @@ public final class ControllerImpl implements AnimationController {
     private boolean warnedEventFailure;
 
     // evaluation buffers, sized to the bound skeleton
-    private int bufferNodes = -1;
+    private @Nullable Skeleton bufferSkeleton;
     private Pose pose, sampleA, sampleB, blendScratch;
-    private float[] weightsA, weightsB, accT, accR, accS, sumT, sumR, sumS, globals;
+    private float[] weightsA, weightsB, accT, accR, accS, accM, sumT, sumR, sumS, sumM, globals;
+    private final float[] lookScratch = new float[16];
     private boolean evaluated;
+    // morph weight overrides (morph:<target> parameters), flattened to slots
+    private boolean morphOverridesDirty = true;
+    private int[] morphOverrideSlots = new int[0];
+    private float[] morphOverrideValues = new float[0];
+    private int morphOverrideCount;
     private final Matrix4f scratchMatrix = new Matrix4f();
 
     private static volatile @Nullable Runnable concurrencyGuard;
@@ -238,7 +246,11 @@ public final class ControllerImpl implements AnimationController {
                 for (Track t : tracks) if (t.isActive() && t.matches(s.target())) t.speed = s.speed();
             }
             case ControllerCommand.Reset r -> applyReset();
-            case ControllerCommand.SetParameter p -> params.put(p.name(), p.value());
+            case ControllerCommand.SetParameter p -> {
+                if (Float.isNaN(p.value())) params.removeFloat(p.name());
+                else params.put(p.name(), p.value());
+                if (p.name().startsWith(MORPH_PARAMETER_PREFIX)) morphOverridesDirty = true;
+            }
             case ControllerCommand.SetGlobalSpeed g -> globalSpeed = g.speed();
         }
     }
@@ -510,11 +522,14 @@ public final class ControllerImpl implements AnimationController {
     /** Set a parameter locally without syncing (client-side parameter providers). */
     public void setLocalParameter(String name, float value) {
         params.put(name, value);
+        if (name.startsWith(MORPH_PARAMETER_PREFIX)) morphOverridesDirty = true;
     }
 
     /** Like {@link #setLocalParameter}, unless the server controls this parameter. */
     public void provideParameter(String name, float value) {
-        if (!remoteParams.contains(name)) params.put(name, value);
+        if (remoteParams.contains(name)) return;
+        params.put(name, value);
+        if (name.startsWith(MORPH_PARAMETER_PREFIX)) morphOverridesDirty = true;
     }
 
     @Override
@@ -588,22 +603,26 @@ public final class ControllerImpl implements AnimationController {
 
     // ================================================================== evaluation
 
-    private void ensureBuffers(int n) {
-        if (bufferNodes == n) return;
-        bufferNodes = n;
-        pose = new Pose(n);
-        sampleA = new Pose(n);
-        sampleB = new Pose(n);
-        blendScratch = new Pose(n);
-        weightsA = new float[n * 3];
-        weightsB = new float[n * 3];
+    private void ensureBuffers(Skeleton sk) {
+        if (bufferSkeleton == sk) return;
+        bufferSkeleton = sk;
+        int n = sk.size(), m = sk.morphSlots();
+        pose = new Pose(n, m);
+        sampleA = new Pose(n, m);
+        sampleB = new Pose(n, m);
+        blendScratch = new Pose(n, m);
+        weightsA = new float[n * Channel.PATHS];
+        weightsB = new float[n * Channel.PATHS];
         accT = new float[n * 3];
-        accR = new float[n * 4];
+        accR = new float[Math.max(8, n * 4)];
         accS = new float[n * 3];
+        accM = new float[m];
         sumT = new float[n];
         sumR = new float[n];
         sumS = new float[n];
+        sumM = new float[n];
         globals = new float[n * 16];
+        morphOverridesDirty = true;
     }
 
     /**
@@ -614,21 +633,18 @@ public final class ControllerImpl implements AnimationController {
     public void prepareForEvaluation() {
         guard();
         int n = tracks.size();
-        if (n == 0) return;
-        if (iteration.length < n) iteration = new Track[n * 2];
-        Track[] snapshot = tracks.toArray(iteration);
-        for (int i = 0; i < n; i++) {
-            snapshot[i].ensureResolved();
-            handleFinished(snapshot[i]);
+        if (n > 0) {
+            if (iteration.length < n) iteration = new Track[n * 2];
+            Track[] snapshot = tracks.toArray(iteration);
+            for (int i = 0; i < n; i++) {
+                snapshot[i].ensureResolved();
+                handleFinished(snapshot[i]);
+            }
+            Arrays.fill(snapshot, 0, n, null);
+            removeDead();
         }
-        Arrays.fill(snapshot, 0, n, null);
-        removeDead();
-        ensureBuffersForSet();
-    }
-
-    private void ensureBuffersForSet() {
         AnimationSet s = set;
-        if (s != null) ensureBuffers(s.skeleton().size());
+        if (s != null) ensureBuffers(s.skeleton());
     }
 
     /**
@@ -643,7 +659,7 @@ public final class ControllerImpl implements AnimationController {
         if (s == null) return false;
         Skeleton sk = s.skeleton();
         int n = sk.size();
-        ensureBuffers(n);
+        ensureBuffers(sk);
         pose.setRest(sk);
         int count = tracks.size();
         int i = 0;
@@ -660,10 +676,19 @@ public final class ControllerImpl implements AnimationController {
                 if (t.options.additive() || t.priority != first.priority || t.slot != first.slot) break;
                 j++;
             }
-            blendGroup(sk, i, j);
+            if (j == i + 1 && first.options.mask() == null && first.weight() >= 1f && first.canSampleDirect()) {
+                // the common case: one full-weight clip in its layer replaces whatever it animates
+                first.sampleDirect(pose);
+            } else {
+                blendGroup(sk, i, j);
+            }
             i = j;
         }
         for (int node = 0; node < n; node++) PoseMath.normalizeQuat(pose.r, node * 4);
+        if (morphOverridesDirty) resolveMorphOverrides(sk);
+        applyMorphOverrides();
+        LookConfig look = s.look();
+        if (look != null) applyLook(sk, look);
         Mat4.computeGlobals(sk, pose, globals);
         evaluated = true;
         return true;
@@ -671,6 +696,7 @@ public final class ControllerImpl implements AnimationController {
 
     private void blendGroup(Skeleton sk, int from, int to) {
         int n = sk.size();
+        int[] morphNodes = sk.morphNodes();
         boolean any = false;
         for (int k = from; k < to; k++) {
             Track t = tracks.get(k);
@@ -681,16 +707,19 @@ public final class ControllerImpl implements AnimationController {
                 Arrays.fill(accT, 0f);
                 Arrays.fill(accR, 0f);
                 Arrays.fill(accS, 0f);
+                Arrays.fill(accM, 0f);
                 Arrays.fill(sumT, 0f);
                 Arrays.fill(sumR, 0f);
                 Arrays.fill(sumS, 0f);
+                Arrays.fill(sumM, 0f);
                 any = true;
             }
             float[] mask = t.options.mask() != null ? t.options.mask().resolve(sk) : null;
             for (int node = 0; node < n; node++) {
                 float base = mask == null ? tw : tw * mask[node];
                 if (base <= 0f) continue;
-                float wt = base * weightsA[node * 3];
+                int p = node * Channel.PATHS;
+                float wt = base * weightsA[p];
                 if (wt > 0f) {
                     int o = node * 3;
                     accT[o] += sampleA.t[o] * wt;
@@ -698,7 +727,7 @@ public final class ControllerImpl implements AnimationController {
                     accT[o + 2] += sampleA.t[o + 2] * wt;
                     sumT[node] += wt;
                 }
-                float wr = base * weightsA[node * 3 + 1];
+                float wr = base * weightsA[p + 1];
                 if (wr > 0f) {
                     int o = node * 4;
                     float sign = PoseMath.dot4(pose.r, o, sampleA.r, o) < 0f ? -wr : wr;
@@ -708,7 +737,7 @@ public final class ControllerImpl implements AnimationController {
                     accR[o + 3] += sampleA.r[o + 3] * sign;
                     sumR[node] += wr;
                 }
-                float ws = base * weightsA[node * 3 + 2];
+                float ws = base * weightsA[p + 2];
                 if (ws > 0f) {
                     int o = node * 3;
                     accS[o] += sampleA.s[o] * ws;
@@ -716,6 +745,12 @@ public final class ControllerImpl implements AnimationController {
                     accS[o + 2] += sampleA.s[o + 2] * ws;
                     sumS[node] += ws;
                 }
+            }
+            for (int node : morphNodes) {
+                float wm = (mask == null ? tw : tw * mask[node]) * weightsA[node * Channel.PATHS + 3];
+                if (wm <= 0f) continue;
+                for (int o = sk.morphOffset(node), end = o + sk.morphCount(node); o < end; o++) accM[o] += sampleA.m[o] * wm;
+                sumM[node] += wm;
             }
         }
         if (!any) return;
@@ -742,6 +777,14 @@ public final class ControllerImpl implements AnimationController {
                 PoseMath.lerp3(pose.s, o, accS, o, Math.min(1f, sumS[node]), pose.s, o);
             }
         }
+        for (int node : morphNodes) {
+            float sum = sumM[node];
+            if (sum <= 0f) continue;
+            float inv = 1f / sum, a = Math.min(1f, sum);
+            for (int o = sk.morphOffset(node), end = o + sk.morphCount(node); o < end; o++) {
+                pose.m[o] += (accM[o] * inv - pose.m[o]) * a;
+            }
+        }
     }
 
     /** Additive layer: adds the clip's offset from the rest pose, scaled by weight. */
@@ -750,20 +793,21 @@ public final class ControllerImpl implements AnimationController {
         if (tw <= WEIGHT_EPSILON) return;
         if (!t.sample(sk, sampleA, weightsA, sampleB, weightsB, blendScratch)) return;
         float[] mask = t.options.mask() != null ? t.options.mask().resolve(sk) : null;
-        float[] rt = sk.restT(), rr = sk.restR(), rs = sk.restS();
-        float[] q = accR; // reuse as scratch: [0..3] delta, [4..7] identity
+        float[] rt = sk.restT(), rr = sk.restR(), rs = sk.restS(), rm = sk.restMorph();
+        float[] q = accR; // reuse as scratch: [0..3] delta, [4..7] identity (at least 8 floats)
         int n = sk.size();
         for (int node = 0; node < n; node++) {
             float base = mask == null ? tw : tw * mask[node];
             if (base <= 0f) continue;
-            float wt = base * weightsA[node * 3];
+            int p = node * Channel.PATHS;
+            float wt = base * weightsA[p];
             if (wt > 0f) {
                 int o = node * 3;
                 pose.t[o] += (sampleA.t[o] - rt[o]) * wt;
                 pose.t[o + 1] += (sampleA.t[o + 1] - rt[o + 1]) * wt;
                 pose.t[o + 2] += (sampleA.t[o + 2] - rt[o + 2]) * wt;
             }
-            float wr = base * weightsA[node * 3 + 1];
+            float wr = base * weightsA[p + 1];
             if (wr > 0f) {
                 int o = node * 4;
                 // delta = sample * conjugate(rest)
@@ -779,7 +823,7 @@ public final class ControllerImpl implements AnimationController {
                 PoseMath.nlerp(q, 4, q, 0, Math.min(1f, wr), q, 0);
                 PoseMath.mulQuat(q, 0, pose.r, o, pose.r, o);
             }
-            float ws = base * weightsA[node * 3 + 2];
+            float ws = base * weightsA[p + 2];
             if (ws > 0f) {
                 int o = node * 3;
                 for (int c = 0; c < 3; c++) {
@@ -789,6 +833,82 @@ public final class ControllerImpl implements AnimationController {
                 }
             }
         }
+        for (int node : sk.morphNodes()) {
+            float wm = (mask == null ? tw : tw * mask[node]) * weightsA[node * Channel.PATHS + 3];
+            if (wm <= 0f) continue;
+            for (int o = sk.morphOffset(node), end = o + sk.morphCount(node); o < end; o++) pose.m[o] += (sampleA.m[o] - rm[o]) * wm;
+        }
+    }
+
+    // ------------------------------------------------------------------ morph overrides and look
+
+    /** Rebuild the flat override table from the {@code morph:} parameters. */
+    private void resolveMorphOverrides(Skeleton sk) {
+        morphOverridesDirty = false;
+        int count = 0;
+        for (Object2FloatMap.Entry<String> e : params.object2FloatEntrySet()) {
+            if (e.getKey().startsWith(MORPH_PARAMETER_PREFIX)) count += sk.findMorph(e.getKey().substring(MORPH_PARAMETER_PREFIX.length())).length;
+        }
+        if (morphOverrideSlots.length < count) {
+            morphOverrideSlots = new int[count];
+            morphOverrideValues = new float[count];
+        }
+        int k = 0;
+        for (Object2FloatMap.Entry<String> e : params.object2FloatEntrySet()) {
+            if (!e.getKey().startsWith(MORPH_PARAMETER_PREFIX)) continue;
+            for (int slot : sk.findMorph(e.getKey().substring(MORPH_PARAMETER_PREFIX.length()))) {
+                morphOverrideSlots[k] = slot;
+                morphOverrideValues[k++] = e.getFloatValue();
+            }
+        }
+        morphOverrideCount = k;
+    }
+
+    private void applyMorphOverrides() {
+        float[] m = pose.m;
+        for (int i = 0; i < morphOverrideCount; i++) m[morphOverrideSlots[i]] = morphOverrideValues[i];
+    }
+
+    /**
+     * Turn the look bone by the {@code look_yaw} / {@code look_pitch} parameters (degrees relative to the body, like
+     * vanilla head yaw minus body yaw, and head pitch: positive looks down). The rotation is applied in model space
+     * at the bone's pivot, so it works for any bone orientation.
+     */
+    private void applyLook(Skeleton sk, LookConfig look) {
+        float yaw = getParameter(LookConfig.YAW_PARAMETER), pitch = getParameter(LookConfig.PITCH_PARAMETER);
+        if (yaw == 0f && pitch == 0f) return;
+        int bone = look.bone();
+        if (bone < 0 || bone >= sk.size()) return;
+        yaw = Math.max(-look.maxYaw(), Math.min(look.maxYaw(), yaw)) * look.weight();
+        pitch = Math.max(-look.maxPitch(), Math.min(look.maxPitch(), pitch)) * look.weight();
+        // model space: yaw about +Y (negated, vanilla yaw turns clockwise seen from above), then pitch about +X
+        float hy = (float) Math.toRadians(-yaw) * 0.5f, hp = (float) Math.toRadians(pitch) * 0.5f;
+        float sy = (float) Math.sin(hy), cy = (float) Math.cos(hy), sp = (float) Math.sin(hp), cp = (float) Math.cos(hp);
+        float[] q = lookScratch;
+        q[0] = cy * sp; // q[0..3] = Ry * Rx
+        q[1] = sy * cp;
+        q[2] = -sy * sp;
+        q[3] = cy * cp;
+        int parent = sk.parent(bone);
+        if (parent >= 0) {
+            // the parent's model-space rotation
+            Mat4.computeGlobals(sk, pose, globals);
+            Mat4.rotationOf(globals, parent * 16, q, 4);
+        } else {
+            q[4] = 0f;
+            q[5] = 0f;
+            q[6] = 0f;
+            q[7] = 1f;
+        }
+        // new local = inverse(P) * L * P * local
+        PoseMath.mulQuat(q, 0, q, 4, q, 8);
+        q[12] = -q[4];
+        q[13] = -q[5];
+        q[14] = -q[6];
+        q[15] = q[7];
+        PoseMath.mulQuat(q, 12, q, 8, q, 8);
+        PoseMath.mulQuat(q, 8, pose.r, bone * 4, pose.r, bone * 4);
+        PoseMath.normalizeQuat(pose.r, bone * 4);
     }
 
     /** Local pose from the last {@link #evaluate()}. */

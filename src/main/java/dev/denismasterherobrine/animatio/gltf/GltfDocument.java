@@ -194,44 +194,29 @@ public final class GltfDocument {
     }
 
     /** Read an accessor as floats, applying normalisation for normalised integer types. */
-    public float[] readFloats(int accessor) throws GltfException {
-        double[] raw = read(accessor);
-        float[] out = new float[raw.length];
-        for (int i = 0; i < raw.length; i++) out[i] = (float) raw[i];
-        return out;
-    }
-
-    /** Read an integer accessor (indices, joints). */
-    public int[] readInts(int accessor) throws GltfException {
-        double[] raw = read(accessor);
-        int[] out = new int[raw.length];
-        for (int i = 0; i < raw.length; i++) out[i] = (int) raw[i];
-        return out;
-    }
-
-    private double[] read(int accessorIndex) throws GltfException {
+    public float[] readFloats(int accessorIndex) throws GltfException {
         JsonObject acc = element("accessors", accessorIndex);
         int count = acc.get("count").getAsInt();
         int comps = components(acc.get("type").getAsString());
         int ct = acc.get("componentType").getAsInt();
         boolean normalized = boolOr(acc, "normalized", false);
-        if (count < 0) throw new GltfException("Accessor " + accessorIndex + " has a negative count");
-        double[] out = new double[count * comps];
+        if (count < 0 || (long) count * comps > Integer.MAX_VALUE / 2) throw new GltfException("Accessor " + accessorIndex + " has an invalid count");
+        float[] out = new float[count * comps];
         if (acc.has("bufferView")) {
-            readView(acc.get("bufferView").getAsInt(), intOr(acc, "byteOffset", 0), count, comps, ct, normalized, out);
+            readViewFloats(acc.get("bufferView").getAsInt(), intOr(acc, "byteOffset", 0), count, comps, ct, normalized, out, 0);
         }
         JsonObject sparse = acc.getAsJsonObject("sparse");
         if (sparse != null) {
             int sparseCount = sparse.get("count").getAsInt();
             JsonObject indices = sparse.getAsJsonObject("indices");
             JsonObject values = sparse.getAsJsonObject("values");
-            double[] idx = new double[sparseCount];
-            readView(indices.get("bufferView").getAsInt(), intOr(indices, "byteOffset", 0), sparseCount, 1,
-                    indices.get("componentType").getAsInt(), false, idx);
-            double[] vals = new double[sparseCount * comps];
-            readView(values.get("bufferView").getAsInt(), intOr(values, "byteOffset", 0), sparseCount, comps, ct, normalized, vals);
+            int[] idx = new int[sparseCount];
+            readViewInts(indices.get("bufferView").getAsInt(), intOr(indices, "byteOffset", 0), sparseCount, 1,
+                    indices.get("componentType").getAsInt(), idx);
+            float[] vals = new float[sparseCount * comps];
+            readViewFloats(values.get("bufferView").getAsInt(), intOr(values, "byteOffset", 0), sparseCount, comps, ct, normalized, vals, 0);
             for (int i = 0; i < sparseCount; i++) {
-                int target = (int) idx[i];
+                int target = idx[i];
                 if (target < 0 || target >= count) throw new GltfException("Sparse index out of range in accessor " + accessorIndex);
                 System.arraycopy(vals, i * comps, out, target * comps, comps);
             }
@@ -239,7 +224,41 @@ public final class GltfDocument {
         return out;
     }
 
-    private void readView(int viewIndex, int accessorOffset, int count, int comps, int ct, boolean normalized, double[] out) throws GltfException {
+    /** Read an integer accessor (indices, joints). */
+    public int[] readInts(int accessorIndex) throws GltfException {
+        JsonObject acc = element("accessors", accessorIndex);
+        int count = acc.get("count").getAsInt();
+        int comps = components(acc.get("type").getAsString());
+        int ct = acc.get("componentType").getAsInt();
+        if (count < 0 || (long) count * comps > Integer.MAX_VALUE / 2) throw new GltfException("Accessor " + accessorIndex + " has an invalid count");
+        int[] out = new int[count * comps];
+        if (acc.has("bufferView")) {
+            readViewInts(acc.get("bufferView").getAsInt(), intOr(acc, "byteOffset", 0), count, comps, ct, out);
+        }
+        JsonObject sparse = acc.getAsJsonObject("sparse");
+        if (sparse != null) {
+            int sparseCount = sparse.get("count").getAsInt();
+            JsonObject indices = sparse.getAsJsonObject("indices");
+            JsonObject values = sparse.getAsJsonObject("values");
+            int[] idx = new int[sparseCount];
+            readViewInts(indices.get("bufferView").getAsInt(), intOr(indices, "byteOffset", 0), sparseCount, 1,
+                    indices.get("componentType").getAsInt(), idx);
+            int[] vals = new int[sparseCount * comps];
+            readViewInts(values.get("bufferView").getAsInt(), intOr(values, "byteOffset", 0), sparseCount, comps, ct, vals);
+            for (int i = 0; i < sparseCount; i++) {
+                int target = idx[i];
+                if (target < 0 || target >= count) throw new GltfException("Sparse index out of range in accessor " + accessorIndex);
+                System.arraycopy(vals, i * comps, out, target * comps, comps);
+            }
+        }
+        return out;
+    }
+
+    /** Validated location of an accessor's elements: buffer, first byte and stride. */
+    private record View(ByteBuffer buf, int base, int stride, int size) {
+    }
+
+    private View view(int viewIndex, int accessorOffset, int count, int comps, int ct) throws GltfException {
         JsonObject view = element("bufferViews", viewIndex);
         int bufferIndex = view.get("buffer").getAsInt();
         if (bufferIndex < 0 || bufferIndex >= buffers.length) throw new GltfException("Buffer view references missing buffer " + bufferIndex);
@@ -250,31 +269,71 @@ public final class GltfDocument {
         int elementSize = size * comps;
         int stride = intOr(view, "byteStride", 0);
         if (stride == 0) stride = elementSize;
+        if (viewOffset < 0 || viewLength < 0 || accessorOffset < 0 || stride < elementSize) throw new GltfException("Malformed buffer view " + viewIndex);
         int base = viewOffset + accessorOffset;
         if (count > 0) {
             long end = (long) base + (long) (count - 1) * stride + elementSize;
-            if (end > (long) viewOffset + viewLength || viewOffset + viewLength > buf.limit()) {
+            if (end > (long) viewOffset + viewLength || (long) viewOffset + viewLength > buf.limit()) {
                 throw new GltfException("Accessor data exceeds its buffer view");
             }
         }
-        for (int i = 0; i < count; i++) {
-            int elem = base + i * stride;
-            for (int c = 0; c < comps; c++) {
-                out[i * comps + c] = component(buf, elem + c * size, ct, normalized);
+        return new View(buf, base, stride, size);
+    }
+
+    private void readViewFloats(int viewIndex, int accessorOffset, int count, int comps, int ct, boolean normalized,
+                                float[] out, int outOffset) throws GltfException {
+        if (count == 0) return;
+        View v = view(viewIndex, accessorOffset, count, comps, ct);
+        ByteBuffer buf = v.buf;
+        int stride = v.stride, size = v.size;
+        if (ct == FLOAT && stride == comps * 4) {
+            // tightly packed floats: one bulk copy
+            buf.slice(v.base, count * stride).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().get(out, outOffset, count * comps);
+            return;
+        }
+        int o = outOffset;
+        for (int i = 0, elem = v.base; i < count; i++, elem += stride) {
+            for (int c = 0, at = elem; c < comps; c++, at += size) {
+                out[o++] = switch (ct) {
+                    case FLOAT -> buf.getFloat(at);
+                    case UNSIGNED_BYTE -> normalized ? (buf.get(at) & 0xFF) / 255f : buf.get(at) & 0xFF;
+                    case BYTE -> normalized ? Math.max(buf.get(at) / 127f, -1f) : buf.get(at);
+                    case UNSIGNED_SHORT -> normalized ? (buf.getShort(at) & 0xFFFF) / 65535f : buf.getShort(at) & 0xFFFF;
+                    case SHORT -> normalized ? Math.max(buf.getShort(at) / 32767f, -1f) : buf.getShort(at);
+                    case UNSIGNED_INT -> (float) (buf.getInt(at) & 0xFFFFFFFFL);
+                    default -> 0f;
+                };
             }
         }
     }
 
-    private static double component(ByteBuffer buf, int offset, int ct, boolean normalized) {
-        return switch (ct) {
-            case FLOAT -> buf.getFloat(offset);
-            case UNSIGNED_BYTE -> normalized ? (buf.get(offset) & 0xFF) / 255.0 : buf.get(offset) & 0xFF;
-            case BYTE -> normalized ? Math.max(buf.get(offset) / 127.0, -1.0) : buf.get(offset);
-            case UNSIGNED_SHORT -> normalized ? (buf.getShort(offset) & 0xFFFF) / 65535.0 : buf.getShort(offset) & 0xFFFF;
-            case SHORT -> normalized ? Math.max(buf.getShort(offset) / 32767.0, -1.0) : buf.getShort(offset);
-            case UNSIGNED_INT -> buf.getInt(offset) & 0xFFFFFFFFL;
-            default -> 0;
-        };
+    private void readViewInts(int viewIndex, int accessorOffset, int count, int comps, int ct, int[] out) throws GltfException {
+        if (count == 0) return;
+        View v = view(viewIndex, accessorOffset, count, comps, ct);
+        ByteBuffer buf = v.buf;
+        int stride = v.stride, size = v.size;
+        if ((ct == UNSIGNED_INT) && stride == comps * 4) {
+            buf.slice(v.base, count * stride).order(ByteOrder.LITTLE_ENDIAN).asIntBuffer().get(out, 0, count * comps);
+            for (int i = 0; i < out.length; i++) if (out[i] < 0) out[i] = Integer.MAX_VALUE; // > 2^31: out of range anyway
+            return;
+        }
+        int o = 0;
+        for (int i = 0, elem = v.base; i < count; i++, elem += stride) {
+            for (int c = 0, at = elem; c < comps; c++, at += size) {
+                out[o++] = switch (ct) {
+                    case UNSIGNED_BYTE -> buf.get(at) & 0xFF;
+                    case BYTE -> buf.get(at);
+                    case UNSIGNED_SHORT -> buf.getShort(at) & 0xFFFF;
+                    case SHORT -> buf.getShort(at);
+                    case UNSIGNED_INT -> {
+                        long u = buf.getInt(at) & 0xFFFFFFFFL;
+                        yield u > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) u;
+                    }
+                    case FLOAT -> (int) buf.getFloat(at);
+                    default -> 0;
+                };
+            }
+        }
     }
 
     /** Raw bytes of a buffer view (embedded images). */

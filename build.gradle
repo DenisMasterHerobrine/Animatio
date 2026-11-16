@@ -56,6 +56,17 @@ neoForge {
             systemProperty 'animatio.dev.heavyRobots', providers.gradleProperty('heavyRobots').getOrElse('false')
         }
 
+        // The same autotest with Iris + Sodium and a test shader pack, in the isolated game directory run-iris
+        // (mods/ holds the Iris and Sodium jars, shaderpacks/AnimatioTest a minimal pack; see README).
+        irisAutotestClient {
+            client()
+            gameDirectory = project.file('run-iris')
+            systemProperty 'animatio.autotest', 'true'
+            systemProperty 'animatio.autotest.perf', providers.gradleProperty('perfCount').getOrElse('0')
+            systemProperty 'animatio.profile', 'true'
+            systemProperty 'animatio.dev.heavyRobots', providers.gradleProperty('heavyRobots').getOrElse('false')
+        }
+
         server {
             server()
             programArgument '--nogui'
@@ -119,6 +130,23 @@ sourceSets.main.resources { srcDir 'src/generated/resources' }
 
 
 dependencies {
+    // Draco mesh decompression (KHR_draco_mesh_compression), pure Java, MIT. Embedded in the mod jar.
+    jarJar(implementation("org.jmonkeyengine:drako")) {
+        version {
+            strictly '[1.4.5-jme,2.0)'
+            prefer '1.4.5-jme'
+        }
+    }
+    additionalRuntimeClasspath 'org.jmonkeyengine:drako:1.4.5-jme'
+    // Zstandard decompression for KTX2 supercompression (KHR_texture_basisu), pure Java, Apache 2.0. Embedded.
+    jarJar(implementation("io.airlift:aircompressor")) {
+        version {
+            strictly '[0.27,0.28)'
+            prefer '0.27'
+        }
+    }
+    additionalRuntimeClasspath 'io.airlift:aircompressor:0.27'
+
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 

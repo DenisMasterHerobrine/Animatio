@@ -32,10 +32,13 @@ flat out float animatioEmissive;
 
 void main() {
     AnimatioInstance inst = animatio_instance();
+    vec3 position = Position;
+    vec3 morphedNormal = Normal;
+    animatio_morph(inst, position, morphedNormal);
     mat4 skin = animatio_skin_matrix(inst, Joints, Weights);
-    vec4 skinned = skin * vec4(Position, 1.0);
+    vec4 skinned = skin * vec4(position, 1.0);
     vec4 pos = inst.model * skinned;
-    vec3 normal = normalize(mat3(inst.model) * (mat3(skin) * Normal));
+    vec3 normal = normalize(mat3(inst.model) * (mat3(skin) * morphedNormal));
 
     gl_Position = ProjMat * ModelViewMat * pos;
     vertexDistance = fog_distance(pos.xyz, FogShape);

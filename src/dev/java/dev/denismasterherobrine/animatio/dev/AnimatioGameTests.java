@@ -54,6 +54,27 @@ public final class AnimatioGameTests {
     }
 
     @GameTest(template = "empty", timeoutTicks = 100)
+    public static void runtimeModelOnVanillaEntity(GameTestHelper helper) {
+        net.minecraft.world.entity.animal.Pig pig = helper.spawn(net.minecraft.world.entity.EntityType.PIG, 2, 1, 2);
+        AnimatioApi.setModel(pig, AnimatioDev.ROBOT_MODEL);
+        ControllerHolder holder = AnimatioApi.holder(pig);
+        holder.refreshBinding();
+        helper.assertTrue(AnimatioDev.ROBOT_MODEL.equals(AnimatioApi.runtimeModel(pig)), "runtime model stored");
+        helper.assertTrue(AnimatioDev.ROBOT_MODEL.equals(holder.model()), "pig is bound to the runtime model");
+        var set = holder.controller().animationSet();
+        helper.assertTrue(set != null && set.clip("antenna") != null, "server loaded the robot, weights clip included");
+        helper.assertTrue(set.skeleton().findMorph("antenna").length == 1, "morph target names come from extras.targetNames");
+        helper.assertTrue(set.socket("eye_camera") != null, "socket configured in code");
+        AnimationController c = AnimatioApi.controller(pig);
+        c.setMorphWeight("chest", 0.5f);
+        helper.assertTrue(c.getParameter("morph:chest") == 0.5f, "morph override stored as a synced parameter");
+        AnimatioApi.setModel(pig, null);
+        holder.refreshBinding();
+        helper.assertTrue(holder.model() == null, "back to no model");
+        helper.succeed();
+    }
+
+    @GameTest(template = "empty", timeoutTicks = 100)
     public static void sequenceTimingAndSnapshot(GameTestHelper helper) {
         RobotEntity robot = helper.spawn(AnimatioDev.ROBOT.get(), 2, 1, 2);
         AnimationController controller = robot.animationController();

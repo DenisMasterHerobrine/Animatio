@@ -9,6 +9,7 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexFormat;
 import dev.denismasterherobrine.animatio.api.material.MaterialOverride;
 import dev.denismasterherobrine.animatio.client.model.GltfModel;
+import it.unimi.dsi.fastutil.objects.Reference2IntOpenHashMap;
 import net.minecraft.client.renderer.LightTexture;
 import net.minecraft.client.renderer.RenderType;
 import org.jetbrains.annotations.Nullable;
@@ -17,9 +18,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 
 /**
  * Deferred CPU path for world rendering.
@@ -29,61 +28,114 @@ import java.util.Map;
  * groups them by render type and splits each group into chunks. Workers skin and write each chunk into its own
  * vertex buffer in parallel; the render thread then only uploads and draws the chunks, with the render type's usual
  * state (and quad sorting for translucent types, which are kept in a single chunk so sorting stays global).
+ * <p>
+ * Draws are kept in parallel arrays and grouped with a counting sort on per-frame render type ids, so a frame with
+ * thousands of parts allocates nothing once the arrays have grown.
  */
 public final class CpuBatcher {
     private static final Logger LOGGER = LoggerFactory.getLogger("Animatio");
     private static final int MIN_CHUNK_VERTICES = 8192;
     private static final int INITIAL_BUFFER_BYTES = 256 * 1024;
 
-    private record Draw(RenderType type, GltfModel.Part part, float[] palette, int entries, int matrix,
-                        int color, int overlay, int light) {
-        int vertices() {
-            return part.quads().length;
-        }
-    }
+    // draws, structure of arrays
+    private int drawCount;
+    private int[] dType = new int[256];
+    private GltfModel.Part[] dPart = new GltfModel.Part[256];
+    private float[][] dPalette = new float[256][];
+    private float[][] dMorph = new float[256][];
+    private int[] dEntries = new int[256];
+    private int[] dMatrix = new int[256];
+    private int[] dColor = new int[256];
+    private int[] dOverlay = new int[256];
+    private int[] dLight = new int[256];
 
-    private record Chunk(RenderType type, List<Draw> draws) {
-    }
+    // render types seen this frame
+    private final Reference2IntOpenHashMap<RenderType> typeIds = new Reference2IntOpenHashMap<>();
+    private final ArrayList<RenderType> types = new ArrayList<>();
+    private int[] typeVertices = new int[16];
 
-    private final ArrayList<Draw> draws = new ArrayList<>();
+    // chunks: ranges of `order`
+    private int[] order = new int[256];
+    private int chunkCount;
+    private int[] chunkType = new int[64], chunkStart = new int[64], chunkEnd = new int[64], chunkWork = new int[64];
+    private Integer[] chunkOrder = new Integer[0];
+
     private float[] matrices = new float[16 * 64];
     private int matrixCount;
     private final ArrayList<ByteBufferBuilder> buffers = new ArrayList<>();
-    /** Per thread: final matrices, skinned positions, skinned normals, normal scales. */
-    private final ThreadLocal<float[][]> scratch = ThreadLocal.withInitial(
-            () -> new float[][]{new float[16 * 64], new float[0], new float[0], new float[64]});
-    private boolean warnedFailure;
+    private MeshData[] meshes = new MeshData[0];
+    private final ThreadLocal<CpuSkinner.Scratch> scratch = ThreadLocal.withInitial(CpuSkinner.Scratch::new);
+    private volatile boolean warnedFailure;
+
+    public CpuBatcher() {
+        typeIds.defaultReturnValue(-1);
+    }
 
     public boolean isEmpty() {
-        return draws.isEmpty();
+        return drawCount == 0;
     }
 
     /**
-     * Queue an instance. The palette array is referenced, not copied: it stays valid until the next frame's
-     * evaluation, which starts after this phase is flushed.
+     * Queue an instance. The palette and morph weight arrays are referenced, not copied: they stay valid until the
+     * next frame's evaluation, which starts after this phase is flushed.
      */
     public void add(GltfModel model, AnimatedInstance instance, PoseStack.Pose pose, int light, int overlay, int tint,
                     CpuSkinner.@Nullable DrawnElsewhere drawnElsewhere) {
         float[] palette = instance.palette();
         int entries = model.paletteSize();
         if (palette.length < entries * 16) return;
+        float[] morph = instance.morphWeights();
         int matrix = -1;
-        for (GltfModel.Part part : model.parts()) {
+        List<GltfModel.Part> parts = model.parts();
+        for (int i = 0, size = parts.size(); i < size; i++) {
+            GltfModel.Part part = parts.get(i);
             MaterialOverride override = instance.override(part.materialName());
             int color = MaterialResolver.color(part, override, tint);
-            RenderType type = MaterialResolver.renderType(part, override, color);
+            RenderType type = MaterialResolver.renderType(part, override, color, instance.skinTexture());
             if (type == null) continue;
             boolean base = drawnElsewhere == null || !drawnElsewhere.test(part, color);
             if (!base && part.emissiveTexture() == null) continue;
             if (matrix < 0) matrix = addMatrix(pose);
-            if (base) {
-                draws.add(new Draw(type, part, palette, entries, matrix, color, overlay, MaterialResolver.light(part, override, light)));
-            }
+            if (base) push(type, part, palette, morph, entries, matrix, color, overlay, MaterialResolver.light(part, override, light));
             if (part.emissiveTexture() != null) {
-                draws.add(new Draw(RenderType.eyes(part.emissiveTexture()), part, palette, entries, matrix, 0xFFFFFFFF, overlay, LightTexture.FULL_BRIGHT));
+                push(RenderType.eyes(part.emissiveTexture()), part, palette, morph, entries, matrix, 0xFFFFFFFF, overlay, LightTexture.FULL_BRIGHT);
             }
         }
         if (RenderStats.ENABLED && matrix >= 0) RenderStats.cpuInstances++;
+    }
+
+    private void push(RenderType type, GltfModel.Part part, float[] palette, float[] morph, int entries, int matrix,
+                      int color, int overlay, int light) {
+        int id = typeIds.getInt(type);
+        if (id < 0) {
+            id = types.size();
+            types.add(type);
+            typeIds.put(type, id);
+        }
+        int i = drawCount;
+        if (i == dType.length) grow(i * 2);
+        dType[i] = id;
+        dPart[i] = part;
+        dPalette[i] = palette;
+        dMorph[i] = morph;
+        dEntries[i] = entries;
+        dMatrix[i] = matrix;
+        dColor[i] = color;
+        dOverlay[i] = overlay;
+        dLight[i] = light;
+        drawCount = i + 1;
+    }
+
+    private void grow(int size) {
+        dType = Arrays.copyOf(dType, size);
+        dPart = Arrays.copyOf(dPart, size);
+        dPalette = Arrays.copyOf(dPalette, size);
+        dMorph = Arrays.copyOf(dMorph, size);
+        dEntries = Arrays.copyOf(dEntries, size);
+        dMatrix = Arrays.copyOf(dMatrix, size);
+        dColor = Arrays.copyOf(dColor, size);
+        dOverlay = Arrays.copyOf(dOverlay, size);
+        dLight = Arrays.copyOf(dLight, size);
     }
 
     private int addMatrix(PoseStack.Pose pose) {
@@ -94,32 +146,33 @@ public final class CpuBatcher {
 
     /** Build every chunk in parallel, then draw them. Render thread, during level rendering. */
     public void flush() {
-        if (draws.isEmpty()) {
+        if (drawCount == 0) {
             clear();
             return;
         }
         long t0 = RenderStats.ENABLED ? System.nanoTime() : 0L;
-        List<Chunk> chunks = chunk();
-        while (buffers.size() < chunks.size()) buffers.add(new ByteBufferBuilder(INITIAL_BUFFER_BYTES));
-        MeshData[] meshes = new MeshData[chunks.size()];
+        chunk();
+        int chunks = chunkCount;
+        while (buffers.size() < chunks) buffers.add(new ByteBufferBuilder(INITIAL_BUFFER_BYTES));
+        if (meshes.length < chunks) meshes = new MeshData[chunks];
         // largest chunks first, so a big unsplittable (translucent) chunk does not start last
-        Integer[] order = new Integer[chunks.size()];
-        int[] sizes = new int[chunks.size()];
-        for (int i = 0; i < order.length; i++) {
-            order[i] = i;
-            for (Draw d : chunks.get(i).draws) sizes[i] += d.part.mesh().vertexCount() + d.vertices();
-        }
-        Arrays.sort(order, (a, b) -> Integer.compare(sizes[b], sizes[a]));
-        AnimatioWorkers.parallelFor(chunks.size(), 1, k -> {
-            int i = order[k];
-            meshes[i] = build(chunks.get(i), i);
+        if (chunkOrder.length < chunks) chunkOrder = new Integer[chunks];
+        for (int i = 0; i < chunks; i++) chunkOrder[i] = i;
+        int[] work = chunkWork;
+        Arrays.sort(chunkOrder, 0, chunks, (a, b) -> Integer.compare(work[b], work[a]));
+        Integer[] sorted = chunkOrder;
+        MeshData[] out = meshes;
+        AnimatioWorkers.parallelFor(chunks, 1, k -> {
+            int i = sorted[k];
+            out[i] = build(i);
         });
         long t1 = RenderStats.ENABLED ? System.nanoTime() : 0L;
 
-        for (int i = 0; i < meshes.length; i++) {
-            MeshData mesh = meshes[i];
+        for (int i = 0; i < chunks; i++) {
+            MeshData mesh = out[i];
+            out[i] = null;
             if (mesh == null) continue;
-            RenderType type = chunks.get(i).type;
+            RenderType type = types.get(chunkType[i]);
             if (type.sortOnUpload()) mesh.sortQuads(buffers.get(i), RenderSystem.getVertexSorting());
             type.draw(mesh); // uploads and closes the mesh, which frees the chunk's buffer for the next frame
         }
@@ -127,79 +180,118 @@ public final class CpuBatcher {
             RenderStats.endCpuBuild();
             RenderStats.cpuSkinNanos += t1 - t0;
             RenderStats.cpuEmitNanos += System.nanoTime() - t1;
-            RenderStats.cpuBatches += chunks.size();
+            RenderStats.cpuBatches += chunks;
         }
         clear();
     }
 
-    /** Group by render type (first-seen order) and split large opaque groups so every worker gets a share. */
-    private List<Chunk> chunk() {
-        Map<RenderType, List<Draw>> groups = new LinkedHashMap<>();
+    /**
+     * Group draws by render type (first-seen order, stable within a type) with a counting sort, then split large
+     * opaque groups so every worker gets a share.
+     */
+    private void chunk() {
+        int n = drawCount, typeCount = types.size();
+        if (typeVertices.length < typeCount + 1) typeVertices = new int[typeCount + 1];
+        int[] counts = new int[typeCount + 1];
+        Arrays.fill(typeVertices, 0, typeCount, 0);
         int total = 0;
-        for (Draw d : draws) {
-            groups.computeIfAbsent(d.type, t -> new ArrayList<>()).add(d);
-            total += d.vertices();
+        for (int i = 0; i < n; i++) {
+            counts[dType[i] + 1]++;
+            int v = dPart[i].quads().length;
+            typeVertices[dType[i]] += v;
+            total += v;
         }
+        for (int t = 0; t < typeCount; t++) counts[t + 1] += counts[t];
+        int[] typeStart = Arrays.copyOf(counts, typeCount + 1);
+        if (order.length < n) order = new int[Math.max(n, order.length * 2)];
+        for (int i = 0; i < n; i++) order[counts[dType[i]]++] = i;
+
         int target = Math.max(MIN_CHUNK_VERTICES, total / Math.max(1, AnimatioWorkers.threads() * 2));
-        List<Chunk> chunks = new ArrayList<>();
-        for (Map.Entry<RenderType, List<Draw>> group : groups.entrySet()) {
-            RenderType type = group.getKey();
-            List<Draw> list = group.getValue();
-            if (type.sortOnUpload()) {
-                chunks.add(new Chunk(type, list));
+        chunkCount = 0;
+        for (int t = 0; t < typeCount; t++) {
+            int from = typeStart[t], to = typeStart[t + 1];
+            if (from == to) continue;
+            if (types.get(t).sortOnUpload()) {
+                addChunk(t, from, to);
                 continue;
             }
-            int from = 0, vertices = 0;
-            for (int i = 0; i < list.size(); i++) {
-                vertices += list.get(i).vertices();
+            int start = from, vertices = 0;
+            for (int k = from; k < to; k++) {
+                vertices += dPart[order[k]].quads().length;
                 if (vertices >= target) {
-                    chunks.add(new Chunk(type, list.subList(from, i + 1)));
-                    from = i + 1;
+                    addChunk(t, start, k + 1);
+                    start = k + 1;
                     vertices = 0;
                 }
             }
-            if (from < list.size()) chunks.add(new Chunk(type, list.subList(from, list.size())));
+            if (start < to) addChunk(t, start, to);
         }
-        return chunks;
+    }
+
+    private void addChunk(int type, int start, int end) {
+        int c = chunkCount;
+        if (c == chunkType.length) {
+            chunkType = Arrays.copyOf(chunkType, c * 2);
+            chunkStart = Arrays.copyOf(chunkStart, c * 2);
+            chunkEnd = Arrays.copyOf(chunkEnd, c * 2);
+            chunkWork = Arrays.copyOf(chunkWork, c * 2);
+        }
+        chunkType[c] = type;
+        chunkStart[c] = start;
+        chunkEnd[c] = end;
+        int work = 0;
+        for (int k = start; k < end; k++) work += dPart[order[k]].mesh().vertexCount() + dPart[order[k]].quads().length;
+        chunkWork[c] = work;
+        chunkCount = c + 1;
     }
 
     /** Worker: skin and write one chunk into its own buffer. */
-    private @Nullable MeshData build(Chunk chunk, int index) {
+    private @Nullable MeshData build(int index) {
         long t0 = RenderStats.ENABLED ? System.nanoTime() : 0L;
         try {
-            return buildChunk(chunk, index);
+            return buildChunk(index);
         } finally {
             if (RenderStats.ENABLED) RenderStats.recordCpuBuild(System.nanoTime() - t0, Thread.currentThread());
         }
     }
 
-    private @Nullable MeshData buildChunk(Chunk chunk, int index) {
+    private @Nullable MeshData buildChunk(int index) {
         ByteBufferBuilder memory = buffers.get(index);
         try {
-            RenderType type = chunk.type;
+            RenderType type = types.get(chunkType[index]);
+            int start = chunkStart[index], end = chunkEnd[index];
             boolean raw = SkinKernel.RAW_WRITES && type.format() == DefaultVertexFormat.NEW_ENTITY && type.mode() == VertexFormat.Mode.QUADS;
             BufferBuilder builder = raw ? null : new BufferBuilder(memory, type.mode(), type.format());
             int vertices = 0;
-            if (raw) for (Draw d : chunk.draws) vertices += d.vertices();
+            if (raw) for (int k = start; k < end; k++) vertices += dPart[order[k]].quads().length;
             long address = raw && vertices > 0 ? memory.reserve(vertices * SkinKernel.ENTITY_VERTEX_SIZE) : 0L;
-            float[][] s = scratch.get();
-            for (Draw d : chunk.draws) {
-                var mesh = d.part.mesh();
-                if (s[0].length < d.entries * 16) {
-                    s[0] = new float[d.entries * 16];
-                    s[3] = new float[d.entries];
+            CpuSkinner.Scratch s = scratch.get();
+            int maxEntries = 0, maxVertices = 0;
+            for (int k = start; k < end; k++) {
+                int d = order[k];
+                maxEntries = Math.max(maxEntries, dEntries[d]);
+                maxVertices = Math.max(maxVertices, dPart[d].mesh().vertexCount());
+            }
+            s.ensure(maxEntries, maxVertices);
+            float[] lastPalette = null;
+            int lastMatrix = -1;
+            for (int k = start; k < end; k++) {
+                int d = order[k];
+                GltfModel.Part part = dPart[d];
+                var mesh = part.mesh();
+                // parts of one instance share their final matrices
+                if (dPalette[d] != lastPalette || dMatrix[d] != lastMatrix) {
+                    SkinKernel.finals(matrices, dMatrix[d] * 16, dPalette[d], dEntries[d], s.finals, s.normalScales);
+                    lastPalette = dPalette[d];
+                    lastMatrix = dMatrix[d];
                 }
-                if (s[1].length < mesh.vertexCount() * 3) {
-                    s[1] = new float[mesh.vertexCount() * 3];
-                    s[2] = new float[mesh.vertexCount() * 3];
-                }
-                SkinKernel.finals(matrices, d.matrix * 16, d.palette, d.entries, s[0], s[3]);
-                SkinKernel.skin(mesh, s[0], s[3], s[1], s[2], 0);
+                s.skin(mesh, dMorph[d]);
+                int[] quads = part.quads();
                 if (raw) {
-                    SkinKernel.emitQuadsRaw(d.part.quads(), mesh, s[1], s[2], 0, address, d.color, d.overlay, d.light);
-                    address += (long) d.vertices() * SkinKernel.ENTITY_VERTEX_SIZE;
+                    SkinKernel.emitQuadsRaw(quads, mesh, s.positions, s.normals, 0, address, dColor[d], dOverlay[d], dLight[d]);
+                    address += (long) quads.length * SkinKernel.ENTITY_VERTEX_SIZE;
                 } else {
-                    SkinKernel.emitQuads(d.part.quads(), mesh, s[1], s[2], 0, builder, d.color, d.overlay, d.light);
+                    SkinKernel.emitQuads(quads, mesh, s.positions, s.normals, 0, builder, dColor[d], dOverlay[d], dLight[d]);
                 }
             }
             if (!raw) return builder.build();
@@ -222,8 +314,14 @@ public final class CpuBatcher {
     }
 
     public void clear() {
-        draws.clear();
+        Arrays.fill(dPart, 0, drawCount, null);
+        Arrays.fill(dPalette, 0, drawCount, null);
+        Arrays.fill(dMorph, 0, drawCount, null);
+        drawCount = 0;
         matrixCount = 0;
+        chunkCount = 0;
+        types.clear();
+        typeIds.clear();
     }
 
     /** Free the chunk buffers (world unload). Render thread. */

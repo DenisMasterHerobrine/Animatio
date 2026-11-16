@@ -15,6 +15,8 @@ import dev.denismasterherobrine.animatio.api.playable.AnimationRef;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.arguments.EntityArgument;
+import net.minecraft.commands.arguments.ResourceLocationArgument;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.Entity;
 
@@ -67,7 +69,40 @@ public final class AnimatioCommand {
                 .then(Commands.literal("reset").then(Commands.argument("targets", EntityArgument.entities())
                         .executes(ctx -> each(ctx, (e, c) -> c.reset()))))
                 .then(Commands.literal("info").then(Commands.argument("targets", EntityArgument.entities())
-                        .executes(AnimatioCommand::info))));
+                        .executes(AnimatioCommand::info)))
+                .then(Commands.literal("morph").then(Commands.argument("targets", EntityArgument.entities())
+                        .then(Commands.argument("target", StringArgumentType.string())
+                                .then(Commands.literal("clear")
+                                        .executes(ctx -> each(ctx, (e, c) -> c.clearMorphWeight(StringArgumentType.getString(ctx, "target")))))
+                                .then(Commands.argument("weight", FloatArgumentType.floatArg(-10f, 10f))
+                                        .executes(ctx -> each(ctx, (e, c) -> c.setMorphWeight(StringArgumentType.getString(ctx, "target"),
+                                                FloatArgumentType.getFloat(ctx, "weight"))))))))
+                .then(Commands.literal("model").then(Commands.argument("targets", EntityArgument.entities())
+                        .then(Commands.literal("reset").executes(ctx -> model(ctx, null)))
+                        .then(Commands.argument("model", ResourceLocationArgument.id())
+                                .executes(ctx -> model(ctx, ResourceLocationArgument.getId(ctx, "model"))))))
+                .then(Commands.literal("camera").then(Commands.argument("viewers", EntityArgument.players())
+                        .then(Commands.literal("stop").executes(ctx -> {
+                            for (ServerPlayer p : EntityArgument.getPlayers(ctx, "viewers")) AnimatioApi.stopCameraView(p);
+                            return 1;
+                        }))
+                        .then(Commands.argument("owner", EntityArgument.entity())
+                                .then(Commands.argument("camera", StringArgumentType.string()).executes(ctx -> {
+                                    Entity owner = EntityArgument.getEntity(ctx, "owner");
+                                    String camera = StringArgumentType.getString(ctx, "camera");
+                                    for (ServerPlayer p : EntityArgument.getPlayers(ctx, "viewers")) AnimatioApi.startCameraView(p, owner, camera);
+                                    return 1;
+                                }))))));
+    }
+
+    private static int model(CommandContext<CommandSourceStack> ctx, net.minecraft.resources.@org.jetbrains.annotations.Nullable ResourceLocation model)
+            throws CommandSyntaxException {
+        Collection<? extends Entity> targets = EntityArgument.getEntities(ctx, "targets");
+        for (Entity e : targets) AnimatioApi.setModel(e, model);
+        int n = targets.size();
+        ctx.getSource().sendSuccess(() -> Component.literal((model == null ? "Reset the model of " : "Set model " + model + " on ")
+                + n + " entit" + (n == 1 ? "y" : "ies")), true);
+        return n;
     }
 
     private static AnimationRef anim(CommandContext<CommandSourceStack> ctx) {

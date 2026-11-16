@@ -30,13 +30,32 @@ import java.util.Optional;
  */
 public record EntityOverride(ResourceLocation model, boolean deathFlip, Driver driver, List<AttachmentDef> attachments) {
 
-    public record Driver(Optional<String> locomotion, Optional<String> attack, Optional<String> hurt, Optional<String> death) {
-        public static final Driver NONE = new Driver(Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
+    /**
+     * Clips (or blend spaces) driven from the entity's state on the client. {@code locomotion} loops on the base layer;
+     * {@code attack}, {@code hurt} and {@code death} play once on events; the state clips ({@code crouch},
+     * {@code swim}, {@code fly} (elytra), {@code ride}, {@code sleep}, {@code use} (using an item)) loop while their
+     * state lasts, on a layer above locomotion.
+     */
+    public record Driver(Optional<String> locomotion, Optional<String> attack, Optional<String> hurt, Optional<String> death,
+                         Optional<String> crouch, Optional<String> swim, Optional<String> fly, Optional<String> ride,
+                         Optional<String> sleep, Optional<String> use) {
+        public static final Driver NONE = new Driver(Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
+                Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
+        /** Conventional names, used for players and runtime-model entities without an override file. */
+        public static final Driver CONVENTIONAL = new Driver(Optional.of("locomotion"), Optional.of("attack"), Optional.of("hurt"),
+                Optional.of("death"), Optional.of("crouch"), Optional.of("swim"), Optional.of("fly"), Optional.of("ride"),
+                Optional.of("sleep"), Optional.of("use"));
         public static final Codec<Driver> CODEC = RecordCodecBuilder.create(i -> i.group(
                 Codec.STRING.optionalFieldOf("locomotion").forGetter(Driver::locomotion),
                 Codec.STRING.optionalFieldOf("attack").forGetter(Driver::attack),
                 Codec.STRING.optionalFieldOf("hurt").forGetter(Driver::hurt),
-                Codec.STRING.optionalFieldOf("death").forGetter(Driver::death)
+                Codec.STRING.optionalFieldOf("death").forGetter(Driver::death),
+                Codec.STRING.optionalFieldOf("crouch").forGetter(Driver::crouch),
+                Codec.STRING.optionalFieldOf("swim").forGetter(Driver::swim),
+                Codec.STRING.optionalFieldOf("fly").forGetter(Driver::fly),
+                Codec.STRING.optionalFieldOf("ride").forGetter(Driver::ride),
+                Codec.STRING.optionalFieldOf("sleep").forGetter(Driver::sleep),
+                Codec.STRING.optionalFieldOf("use").forGetter(Driver::use)
         ).apply(i, Driver::new));
     }
 

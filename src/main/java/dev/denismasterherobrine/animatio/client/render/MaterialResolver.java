@@ -6,7 +6,6 @@ import dev.denismasterherobrine.animatio.data.ModelDefinition;
 import net.minecraft.client.renderer.LightTexture;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.resources.ResourceLocation;
-import net.minecraft.util.FastColor;
 import org.jetbrains.annotations.Nullable;
 
 /**
@@ -16,11 +15,38 @@ public final class MaterialResolver {
     private MaterialResolver() {
     }
 
-    /** The vanilla render type for a part, or {@code null} if the part is not drawn. */
-    public static @Nullable RenderType renderType(GltfModel.Part part, MaterialOverride override, int color) {
+    /**
+     * The vanilla render type for a part, or {@code null} if the part is not drawn. Parts without a texture
+     * override use a per-part cache, so the common case costs no render-type lookup.
+     *
+     * @param skin the owner's skin texture, used by parts whose texture is {@link ModelDefinition#PLAYER_SKIN}
+     */
+    public static @Nullable RenderType renderType(GltfModel.Part part, MaterialOverride override, int color, @Nullable ResourceLocation skin) {
         if (override.hidden() || part.kind() == ModelDefinition.RenderTypeKind.INVISIBLE) return null;
-        ResourceLocation tex = override.texture() != null ? override.texture() : part.texture();
-        boolean translucent = FastColor.ARGB32.alpha(color) < 255;
+        boolean translucent = (color >>> 24) < 255;
+        ResourceLocation tex = texture(part, override, skin);
+        if (tex == part.texture()) {
+            RenderType[] cache = part.renderTypeCache();
+            int slot = translucent ? 1 : 0;
+            RenderType cached = cache[slot];
+            if (cached == null) cache[slot] = cached = create(part, tex, translucent);
+            return cached;
+        }
+        return create(part, tex, translucent);
+    }
+
+    /** The base texture a part is drawn with for an instance. */
+    public static ResourceLocation texture(GltfModel.Part part, MaterialOverride override, @Nullable ResourceLocation skin) {
+        ResourceLocation tex = override.texture();
+        if (tex == null) {
+            if (!part.usesSkin()) return part.texture();
+            return skin != null ? skin : net.minecraft.client.resources.DefaultPlayerSkin.getDefaultTexture();
+        }
+        if (tex.equals(ModelDefinition.PLAYER_SKIN)) return skin != null ? skin : net.minecraft.client.resources.DefaultPlayerSkin.getDefaultTexture();
+        return tex;
+    }
+
+    private static RenderType create(GltfModel.Part part, ResourceLocation tex, boolean translucent) {
         return switch (part.kind()) {
             case TRANSLUCENT -> RenderType.entityTranslucent(tex);
             case EMISSIVE -> RenderType.entityTranslucentEmissive(tex);
@@ -45,13 +71,14 @@ public final class MaterialResolver {
         return block | (sky << 16);
     }
 
+    /** Component-wise product of two ARGB colours ({@code -1} is white and returns the other unchanged). */
     public static int multiply(int a, int b) {
         if (b == -1) return a;
         if (a == -1) return b;
-        return FastColor.ARGB32.color(
-                FastColor.ARGB32.alpha(a) * FastColor.ARGB32.alpha(b) / 255,
-                FastColor.ARGB32.red(a) * FastColor.ARGB32.red(b) / 255,
-                FastColor.ARGB32.green(a) * FastColor.ARGB32.green(b) / 255,
-                FastColor.ARGB32.blue(a) * FastColor.ARGB32.blue(b) / 255);
+        int aa = (a >>> 24) * (b >>> 24) / 255;
+        int r = ((a >> 16) & 0xFF) * ((b >> 16) & 0xFF) / 255;
+        int g = ((a >> 8) & 0xFF) * ((b >> 8) & 0xFF) / 255;
+        int bb = (a & 0xFF) * (b & 0xFF) / 255;
+        return aa << 24 | r << 16 | g << 8 | bb;
     }
 }

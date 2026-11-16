@@ -23,13 +23,33 @@ final class ClientBridgeImpl implements ClientBridge {
     }
 
     @Override
+    public long frame() {
+        return ClientClock.frame();
+    }
+
+    @Override
     public int generation() {
         return ClientModelManager.INSTANCE.generation() * 31 + EntityOverrides.INSTANCE.generation();
     }
 
     @Override
     public @Nullable ResourceLocation overrideModel(Entity entity) {
+        if (entity instanceof net.minecraft.world.entity.player.Player player) {
+            ResourceLocation local = AnimatioClientApi.localPlayerModel(player.getUUID());
+            if (local != null) return local;
+        }
         return EntityOverrides.INSTANCE.model(entity.getType());
+    }
+
+    @Override
+    public void cameraView(@Nullable Entity owner, String camera) {
+        if (owner == null || camera.isEmpty()) dev.denismasterherobrine.animatio.client.camera.CinematicCamera.stop();
+        else dev.denismasterherobrine.animatio.client.camera.CinematicCamera.start(owner, camera);
+    }
+
+    @Override
+    public void handleItemCommand(long id, double time, dev.denismasterherobrine.animatio.anim.runtime.ControllerCommand command) {
+        dev.denismasterherobrine.animatio.client.item.ItemAnimations.applyRemote(id, time, command);
     }
 
     @Override

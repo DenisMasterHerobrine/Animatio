@@ -63,6 +63,9 @@ public final class AnimatioDev {
             AnimatioApi.bindModel(ROBOT.get(), ROBOT_MODEL);
             AnimatioApi.bindModel(STATUE_BE.get(), ROBOT_MODEL);
         });
+        // a forward-looking camera in the head (the head bone looks backward along -Z, like every glTF camera)
+        AnimatioApi.configureModel(ROBOT_MODEL, m -> m.socket("eye_camera", "head",
+                new org.joml.Matrix4f().translate(0f, 0.3f, 0.3f).rotateY((float) Math.PI)));
 
         // handler for the "animatio_dev:hearts" custom event fired by the wave clip (client side)
         AnimatioApi.registerEventHandler(ResourceLocation.fromNamespaceAndPath(MODID, "hearts"), (ctx, data) -> {

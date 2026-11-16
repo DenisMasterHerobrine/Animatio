@@ -25,6 +25,7 @@ public final class ControllerHolder {
     private @Nullable ResourceLocation model;
     private int boundGeneration = Integer.MIN_VALUE;
     private int boundConfigVersion = Integer.MIN_VALUE;
+    private long refreshedFrame = -1;
     /** Client render state (owned by the client package; opaque to common code). */
     public @Nullable Object renderState;
     /** Client-only hook run every tick before the controller advances (parameter providers). */
@@ -100,6 +101,13 @@ public final class ControllerHolder {
 
     /** Bind to the current model data, picking up model changes and reloads. Cheap when nothing changed. */
     public void refreshBinding() {
+        if (client) {
+            // render code calls this several times per object per frame; once per frame is enough
+            ClientBridge bridge = ClientBridge.Holder.get();
+            long frame = bridge != null ? bridge.frame() : -1;
+            if (frame >= 0 && frame == refreshedFrame) return;
+            refreshedFrame = frame;
+        }
         ResourceLocation id = ModelBindings.modelFor(owner, client);
         int generation = generation();
         int configVersion = ModelConfigs.version();

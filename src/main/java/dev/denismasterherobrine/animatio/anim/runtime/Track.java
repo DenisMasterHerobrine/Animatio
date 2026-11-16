@@ -1,6 +1,7 @@
 package dev.denismasterherobrine.animatio.anim.runtime;
 
 import dev.denismasterherobrine.animatio.anim.math.PoseMath;
+import dev.denismasterherobrine.animatio.anim.model.Channel;
 import dev.denismasterherobrine.animatio.anim.model.ClipInfo;
 import dev.denismasterherobrine.animatio.anim.model.Pose;
 import dev.denismasterherobrine.animatio.anim.model.Skeleton;
@@ -524,8 +525,41 @@ final class Track {
         return (float) (m < 0 ? m + duration : m);
     }
 
+    /** True if this track shows a plain clip with no step blend in progress (see {@link #sampleDirect}). */
+    boolean canSampleDirect() {
+        if (stepBlendT < stepBlendDur || resolvedVersion != ctl.setVersion()) return false;
+        if (shownRes instanceof ClipInfo) return true;
+        return shownRes instanceof BlendSpace && singleBlendClip(bsClips, bsWeights) >= 0;
+    }
+
     /**
-     * Sample this track's local pose into {@code out}, with per node/path weights (3 per node) in {@code w}.
+     * Write the shown clip's animated properties straight into {@code pose}, leaving the others alone. Only valid
+     * after {@link #canSampleDirect()}; equivalent to {@link #sample} followed by a full-weight blend.
+     */
+    void sampleDirect(Pose pose) {
+        if (shownRes instanceof ClipInfo ci) {
+            ci.clip().sample(displayTime(), pose);
+        } else {
+            ClipInfo ci = bsClips[singleBlendClip(bsClips, bsWeights)];
+            ci.clip().sample(displayTime() * ci.duration(), pose);
+        }
+    }
+
+    /** The only blend-space clip with weight, or -1 when several (or none) contribute. */
+    private static int singleBlendClip(@Nullable ClipInfo[] clips, @Nullable float[] weights) {
+        if (clips == null || weights == null) return -1;
+        int found = -1;
+        for (int i = 0; i < clips.length; i++) {
+            if (clips[i] == null || weights[i] <= WEIGHT_EPSILON) continue;
+            if (found >= 0) return -1;
+            found = i;
+        }
+        return found;
+    }
+
+    /**
+     * Sample this track's local pose into {@code out}, with per node/path weights ({@link Channel#PATHS} per node)
+     * in {@code w}.
      *
      * @return false if the track shows nothing
      */
@@ -540,12 +574,16 @@ final class Track {
                 out.setRest(sk);
                 Arrays.fill(w, 0f);
             }
+            float[] pw = hasPrev ? prevW : null;
             int n = sk.size();
             for (int node = 0; node < n; node++) {
-                int k = node * 3;
-                mixPath(k, out.t, prevPose.t, node * 3, 3, w, hasPrev ? prevW : null, a, false);
-                mixPath(k + 1, out.r, prevPose.r, node * 4, 4, w, hasPrev ? prevW : null, a, true);
-                mixPath(k + 2, out.s, prevPose.s, node * 3, 3, w, hasPrev ? prevW : null, a, false);
+                int k = node * Channel.PATHS;
+                mixPath(k, out.t, prevPose.t, node * 3, 3, w, pw, a, false);
+                mixPath(k + 1, out.r, prevPose.r, node * 4, 4, w, pw, a, true);
+                mixPath(k + 2, out.s, prevPose.s, node * 3, 3, w, pw, a, false);
+            }
+            for (int node : sk.morphNodes()) {
+                mixPath(node * Channel.PATHS + 3, out.m, prevPose.m, sk.morphOffset(node), sk.morphCount(node), w, pw, a, false);
             }
             return true;
         }
@@ -557,7 +595,7 @@ final class Track {
         float wp = prevW != null ? prevW[k] : 0f;
         if (wc > 0f && wp > 0f) {
             if (quat) PoseMath.nlerp(prev, o, cur, o, a, cur, o);
-            else PoseMath.lerp3(prev, o, cur, o, a, cur, o);
+            else for (int c = 0; c < comps; c++) cur[o + c] = prev[o + c] + (cur[o + c] - prev[o + c]) * a;
             w[k] = wp + (wc - wp) * a;
         } else if (wc > 0f) {
             w[k] = wc * a;
@@ -570,7 +608,7 @@ final class Track {
     private static boolean sampleRes(Skeleton sk, @Nullable Object res, float time, @Nullable ClipInfo[] clips,
                                      @Nullable float[] weights, Pose out, float[] w, Pose scratch) {
         if (res instanceof ClipInfo ci) {
-            out.setRest(sk);
+            // no reset: readers only look at entries the weights mark as animated
             ci.clip().sample(time, out);
             System.arraycopy(ci.clip().pathMask(), 0, w, 0, w.length);
             return true;
@@ -581,58 +619,72 @@ final class Track {
         return false;
     }
 
+    /**
+     * Weighted average of the blend space's clips. Only animated properties are touched: every property some clip
+     * animates starts at the rest value and each clip adds {@code weight * (value - rest)} for the properties it
+     * animates (clips that leave a property alone contribute the rest value, as a full-pose average would).
+     * Clips sample straight into the scratch pose, without resetting it, since only their own entries are read.
+     */
     private static boolean sampleBlend(Skeleton sk, BlendSpace bs, float phase, ClipInfo[] clips, float[] weights,
                                        Pose out, float[] w, Pose scratch) {
-        int n = sk.size();
         float total = 0f;
         Arrays.fill(w, 0f);
         for (int i = 0; i < clips.length; i++) {
             if (clips[i] == null || weights[i] <= WEIGHT_EPSILON) continue;
             total += weights[i];
-            float[] mask = clips[i].clip().pathMask();
-            for (int k = 0; k < w.length; k++) if (mask[k] > w[k]) w[k] = mask[k];
+            for (int k : clips[i].clip().animated()) w[k] = 1f;
         }
         if (total <= 0f) return false;
 
-        out.setRest(sk);
-        float[] rr = sk.restR();
-        for (int node = 0; node < n; node++) {
-            if (w[node * 3] > 0f) Arrays.fill(out.t, node * 3, node * 3 + 3, 0f);
-            if (w[node * 3 + 1] > 0f) Arrays.fill(out.r, node * 4, node * 4 + 4, 0f);
-            if (w[node * 3 + 2] > 0f) Arrays.fill(out.s, node * 3, node * 3 + 3, 0f);
+        float[] rt = sk.restT(), rr = sk.restR(), rs = sk.restS(), rm = sk.restMorph();
+        // start every animated property at rest
+        for (int k = 0, n = w.length; k < n; k++) {
+            if (w[k] == 0f) continue;
+            int node = k >> 2;
+            switch (k & 3) {
+                case Channel.TRANSLATION -> System.arraycopy(rt, node * 3, out.t, node * 3, 3);
+                case Channel.ROTATION -> System.arraycopy(rr, node * 4, out.r, node * 4, 4);
+                case Channel.SCALE -> System.arraycopy(rs, node * 3, out.s, node * 3, 3);
+                default -> {
+                    int o = sk.morphOffset(node);
+                    System.arraycopy(rm, o, out.m, o, sk.morphCount(node));
+                }
+            }
         }
         float inv = 1f / total;
         for (int i = 0; i < clips.length; i++) {
             ClipInfo ci = clips[i];
             if (ci == null || weights[i] <= WEIGHT_EPSILON) continue;
             float wi = weights[i] * inv;
-            scratch.setRest(sk);
             ci.clip().sample(phase * ci.duration(), scratch);
-            for (int node = 0; node < n; node++) {
-                if (w[node * 3] > 0f) {
-                    int o = node * 3;
-                    out.t[o] += scratch.t[o] * wi;
-                    out.t[o + 1] += scratch.t[o + 1] * wi;
-                    out.t[o + 2] += scratch.t[o + 2] * wi;
-                }
-                if (w[node * 3 + 1] > 0f) {
-                    int o = node * 4;
-                    float sign = PoseMath.dot4(rr, o, scratch.r, o) < 0f ? -wi : wi;
-                    out.r[o] += scratch.r[o] * sign;
-                    out.r[o + 1] += scratch.r[o + 1] * sign;
-                    out.r[o + 2] += scratch.r[o + 2] * sign;
-                    out.r[o + 3] += scratch.r[o + 3] * sign;
-                }
-                if (w[node * 3 + 2] > 0f) {
-                    int o = node * 3;
-                    out.s[o] += scratch.s[o] * wi;
-                    out.s[o + 1] += scratch.s[o + 1] * wi;
-                    out.s[o + 2] += scratch.s[o + 2] * wi;
+            for (int k : ci.clip().animated()) {
+                int node = k >> 2;
+                switch (k & 3) {
+                    case Channel.TRANSLATION, Channel.SCALE -> {
+                        float[] src = (k & 3) == Channel.TRANSLATION ? scratch.t : scratch.s;
+                        float[] dst = (k & 3) == Channel.TRANSLATION ? out.t : out.s;
+                        float[] rest = (k & 3) == Channel.TRANSLATION ? rt : rs;
+                        int o = node * 3;
+                        dst[o] += (src[o] - rest[o]) * wi;
+                        dst[o + 1] += (src[o + 1] - rest[o + 1]) * wi;
+                        dst[o + 2] += (src[o + 2] - rest[o + 2]) * wi;
+                    }
+                    case Channel.ROTATION -> {
+                        int o = node * 4;
+                        float sign = PoseMath.dot4(rr, o, scratch.r, o) < 0f ? -wi : wi;
+                        out.r[o] += scratch.r[o] * sign - rr[o] * wi;
+                        out.r[o + 1] += scratch.r[o + 1] * sign - rr[o + 1] * wi;
+                        out.r[o + 2] += scratch.r[o + 2] * sign - rr[o + 2] * wi;
+                        out.r[o + 3] += scratch.r[o + 3] * sign - rr[o + 3] * wi;
+                    }
+                    default -> {
+                        for (int o = sk.morphOffset(node), end = o + sk.morphCount(node); o < end; o++) out.m[o] += (scratch.m[o] - rm[o]) * wi;
+                    }
                 }
             }
         }
-        for (int node = 0; node < n; node++) {
-            if (w[node * 3 + 1] > 0f) PoseMath.normalizeQuat(out.r, node * 4);
+        for (int k = 1, n = w.length; k < n; k += 4) {
+            if (w[k] > 0f) PoseMath.normalizeQuat(out.r, (k >> 2) * 4);
         }
         return true;
     }

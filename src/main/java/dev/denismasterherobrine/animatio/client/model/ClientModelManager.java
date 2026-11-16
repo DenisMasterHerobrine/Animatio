@@ -96,22 +96,27 @@ public final class ClientModelManager extends SimplePreparableReloadListener<Cli
     @Override
     protected Prepared prepare(ResourceManager manager, ProfilerFiller profiler) {
         Map<ResourceLocation, Loaded> out = new HashMap<>();
+        Map<ResourceLocation, Integer> priorities = new HashMap<>();
         Map<ResourceLocation, Resource> files = manager.listResources(ModelPaths.DIRECTORY,
-                rl -> rl.getPath().endsWith(".glb") || rl.getPath().endsWith(".gltf"));
+                rl -> rl.getPath().endsWith(".glb") || rl.getPath().endsWith(".gltf") || rl.getPath().endsWith(".bbmodel"));
         for (Map.Entry<ResourceLocation, Resource> e : files.entrySet()) {
             ResourceLocation file = e.getKey();
             ResourceLocation id = ModelPaths.modelId(file);
             if (id == null) continue;
-            if (out.containsKey(id)) {
-                LOGGER.warn("Model {} exists as both .glb and .gltf; using the .glb", id);
-                if (file.getPath().endsWith(".gltf")) continue;
+            // one model id, several files: .glb wins over .gltf, which wins over .bbmodel
+            int priority = file.getPath().endsWith(".glb") ? 3 : file.getPath().endsWith(".gltf") ? 2 : 1;
+            Integer existing = priorities.get(id);
+            if (existing != null) {
+                LOGGER.warn("Model {} exists in more than one format (.glb, .gltf, .bbmodel); using the .glb, then the .gltf", id);
+                if (existing >= priority) continue;
             }
+            priorities.put(id, priority);
             try {
                 byte[] bytes;
                 try (InputStream in = e.getValue().open()) {
                     bytes = in.readAllBytes();
                 }
-                ModelData data = GltfLoader.load(id.toString(), bytes, true, uri -> readOrNull(manager, ModelPaths.relative(file, uri)));
+                ModelData data = ModelPaths.load(id.toString(), file.getPath(), bytes, true, uri -> readOrNull(manager, ModelPaths.relative(file, uri)));
                 ModelDefinition def = loadDefinition(manager, id);
                 List<NativeImage> images = new ArrayList<>(data.images().size());
                 for (int i = 0; i < data.images().size(); i++) {

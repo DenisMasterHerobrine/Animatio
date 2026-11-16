@@ -122,6 +122,26 @@ public interface AnimationController {
 
     float getParameter(String name);
 
+    // --- morph targets ---
+
+    /** Parameter-name prefix under which morph weight overrides are stored and synced. */
+    String MORPH_PARAMETER_PREFIX = "morph:";
+
+    /**
+     * Pin a morph target (shape key) to a weight, overriding what the animations produce. {@code target} is the
+     * target name from the glTF file ({@code extras.targetNames}, as Blender exports shape keys), applied on every
+     * mesh that has it, or {@code "<node>/<target>"} for one mesh. Synced from the server like a parameter.
+     */
+    default void setMorphWeight(String target, float weight) {
+        if (!Float.isFinite(weight)) throw new IllegalArgumentException("Invalid morph weight " + weight);
+        setParameter(MORPH_PARAMETER_PREFIX + target, weight);
+    }
+
+    /** Remove a {@link #setMorphWeight} override: the target follows the animations again. */
+    default void clearMorphWeight(String target) {
+        setParameter(MORPH_PARAMETER_PREFIX + target, Float.NaN);
+    }
+
     // --- configuration ---
 
     /** Per-controller transition overrides, consulted before the model's table. Not synced. */

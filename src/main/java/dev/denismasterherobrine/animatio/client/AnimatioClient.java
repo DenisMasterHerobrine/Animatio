@@ -47,6 +47,7 @@ public final class AnimatioClient {
 
         // render-thread controller calls wait for background pose evaluation first
         ControllerImpl.setConcurrencyGuard(PoseScheduler::awaitPending);
+        dev.denismasterherobrine.animatio.client.camera.CinematicCamera.install(bus);
     }
 
     private static void onConfig(ModConfig config) {
@@ -78,5 +79,7 @@ public final class AnimatioClient {
     private static void onLoggingOut(ClientPlayerNetworkEvent.LoggingOut event) {
         FramePipeline.release();
         ControllerTicker.clearClient();
+        dev.denismasterherobrine.animatio.client.item.ItemAnimations.clear();
+        dev.denismasterherobrine.animatio.client.camera.CinematicCamera.stop();
     }
 }

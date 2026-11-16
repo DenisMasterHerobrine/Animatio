@@ -4,6 +4,7 @@ import com.mojang.serialization.JsonOps;
 import dev.denismasterherobrine.animatio.anim.model.AnimationSet;
 import dev.denismasterherobrine.animatio.anim.model.Clip;
 import dev.denismasterherobrine.animatio.anim.model.ClipInfo;
+import dev.denismasterherobrine.animatio.anim.model.LookConfig;
 import dev.denismasterherobrine.animatio.anim.model.Skeleton;
 import dev.denismasterherobrine.animatio.anim.model.Socket;
 import dev.denismasterherobrine.animatio.api.playable.BlendSpace;
@@ -43,11 +44,11 @@ public final class AnimationSetFactory {
                         .resultOrPartial(err -> LOGGER.warn("Model {}: bad event in glTF extras of '{}': {}", id, name, err))
                         .ifPresent(markers::add);
             }
-            boolean loop = false;
+            boolean loop = model.loopHints().getOrDefault(name, false);
             float speed = 1f;
             ModelDefinition.ClipDef cd = d.clips().get(name);
             if (cd != null) {
-                loop = cd.loop().orElse(false);
+                loop = cd.loop().orElse(loop);
                 speed = cd.speed().orElse(1f);
                 markers.addAll(cd.events());
             }
@@ -103,6 +104,19 @@ public final class AnimationSetFactory {
                 }
                 b.socket(new Socket(e.getKey(), bone, e.getValue().offset().get(new float[16])));
             }
+        }
+
+        b.cameras(model.cameras());
+        b.lights(model.lights());
+        ModelConfig.LookSettings look = code != null ? code.look() : null;
+        if (look == null && d.look().isPresent()) {
+            ModelDefinition.LookDef l = d.look().get();
+            look = new ModelConfig.LookSettings(l.bone(), l.maxYaw(), l.maxPitch(), l.weight());
+        }
+        if (look != null) {
+            int bone = sk.find(look.bone());
+            if (bone < 0) LOGGER.warn("Model {}: look bone '{}' does not exist", id, look.bone());
+            else b.look(new LookConfig(bone, look.maxYaw(), look.maxPitch(), look.weight()));
         }
         return b.build();
     }

@@ -32,6 +32,7 @@ public final class AnimatedInstance {
     private @Nullable GltfModel model;
     private @Nullable ControllerHolder holder;
     private float[] palette = new float[0];
+    private float[] morphWeights = new float[0];
     private long evaluatedFrame = -1;
     private double evaluatedAt = Double.NaN;
     private long recordedFrame = -1;
@@ -41,6 +42,7 @@ public final class AnimatedInstance {
     private float radius;
     private final Map<String, MaterialOverride> overrides = new HashMap<>();
     private MaterialOverride allOverride = MaterialOverride.none();
+    private @Nullable net.minecraft.resources.ResourceLocation skinTexture;
     /** LOD multiplier from client settings; 0 disables reduced update rates. */
     public static float lodDistanceScale = 1f;
 
@@ -89,6 +91,7 @@ public final class AnimatedInstance {
         if (changed) {
             this.model = model;
             this.palette = new float[model.paletteSize() * 16];
+            this.morphWeights = new float[model.data().skeleton().morphSlots()];
             this.evaluatedAt = Double.NaN;
             this.evaluatedFrame = -1;
         }
@@ -107,8 +110,10 @@ public final class AnimatedInstance {
         AnimationSet set = controller.animationSet();
         if (set != null && set.skeleton() == model.data().skeleton() && controller.evaluate()) {
             model.data().computePalette(controller.globals(), palette);
+            if (morphWeights.length > 0) System.arraycopy(controller.pose().m, 0, morphWeights, 0, morphWeights.length);
         } else {
             System.arraycopy(model.restPalette(), 0, palette, 0, palette.length);
+            if (morphWeights.length > 0) System.arraycopy(model.data().skeleton().restMorph(), 0, morphWeights, 0, morphWeights.length);
         }
         if (RenderStats.ENABLED) RenderStats.recordEvaluation(System.nanoTime() - t0);
     }
@@ -156,6 +161,11 @@ public final class AnimatedInstance {
         return palette;
     }
 
+    /** Morph target weights of the last evaluated pose ({@code Pose.m} layout). Do not modify. */
+    public float[] morphWeights() {
+        return morphWeights;
+    }
+
     public @Nullable GltfModel model() {
         return model;
     }
@@ -194,6 +204,17 @@ public final class AnimatedInstance {
         modelToWorld.mul(scratch, scratch);
         scratch.getTranslation(out);
         return true;
+    }
+
+    // ------------------------------------------------------------------ owner skin
+
+    /** The owner's skin texture for parts textured {@code animatio:player_skin} (set by the renderer each frame). */
+    public void setSkinTexture(@Nullable net.minecraft.resources.ResourceLocation skin) {
+        this.skinTexture = skin;
+    }
+
+    public @Nullable net.minecraft.resources.ResourceLocation skinTexture() {
+        return skinTexture;
     }
 
     // ------------------------------------------------------------------ material overrides

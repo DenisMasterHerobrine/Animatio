@@ -1,14 +1,23 @@
 package dev.denismasterherobrine.animatio.client.render;
 
 import com.mojang.blaze3d.vertex.PoseStack;
+import dev.denismasterherobrine.animatio.client.AnimatioClientConfig;
 import dev.denismasterherobrine.animatio.client.model.GltfModel;
+import dev.denismasterherobrine.animatio.client.render.gpu.FeedbackSkinner;
 import dev.denismasterherobrine.animatio.client.render.gpu.GpuRenderer;
+import dev.denismasterherobrine.animatio.client.render.gpu.IrisCompat;
 import net.minecraft.client.renderer.MultiBufferSource;
+import net.minecraft.client.renderer.OutlineBufferSource;
 import org.jetbrains.annotations.Nullable;
 
 /**
- * Chooses how a prepared instance is drawn: batched GPU skinning when available, otherwise the CPU path (batched by
- * render type during world rendering, immediate everywhere else).
+ * Chooses how a prepared instance is drawn:
+ * <ol>
+ *     <li>batched, instanced GPU skinning during world rendering;</li>
+ *     <li>with a shader pack, transform-feedback GPU skinning drawn through the pack's own programs
+ *     ({@link FeedbackSkinner});</li>
+ *     <li>otherwise the CPU path (batched by render type during world rendering, immediate everywhere else).</li>
+ * </ol>
  */
 public final class ModelRenderer {
     /** Where the draw happens; only world rendering is batched. */
@@ -22,7 +31,17 @@ public final class ModelRenderer {
         if (context != Context.OTHER && GpuRenderer.tryEnqueue(model, instance, poseStack.last(), buffers, light, overlay, tint, context)) {
             return;
         }
+        if (useFeedback(buffers, context) && FeedbackSkinner.render(model, instance, poseStack.last(), light, overlay, tint)) {
+            renderCpu(model, instance, poseStack.last(), buffers, light, overlay, tint, FeedbackSkinner::drawsBase, context);
+            return;
+        }
         renderCpu(model, instance, poseStack.last(), buffers, light, overlay, tint, null, context);
+    }
+
+    /** Transform-feedback skinning: in the world, with GPU skinning on, while a shader pack is active (or when forced). */
+    private static boolean useFeedback(MultiBufferSource buffers, Context context) {
+        if (context == Context.OTHER || !AnimatioClientConfig.gpuSkinning() || buffers instanceof OutlineBufferSource) return false;
+        return AnimatioClientConfig.forceFeedbackSkinning() || IrisCompat.isShaderPackInUse();
     }
 
     /** CPU path: deferred into the phase's {@link CpuBatcher} when possible, else written immediately. */

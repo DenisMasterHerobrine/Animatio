@@ -37,8 +37,16 @@ public final class ModelBindings {
         return BLOCK_ENTITIES.get(type);
     }
 
-    /** Resolution order: {@link GltfAnimatable}, type binding, then (client only) a resource-pack entity override. */
+    /**
+     * Resolution order: a runtime per-entity model ({@link EntityModels}), {@link GltfAnimatable}, the type binding,
+     * then (client only) a client-side choice: a per-player model set through the client API or a resource-pack
+     * entity override.
+     */
     public static @Nullable ResourceLocation modelFor(Object owner, boolean client) {
+        if (owner instanceof Entity e) {
+            ResourceLocation id = EntityModels.get(e);
+            if (id != null) return id;
+        }
         if (owner instanceof GltfAnimatable a) {
             ResourceLocation id = a.animatioModel();
             if (id != null) return id;

@@ -19,3 +19,6 @@ hs_err_pid*
 
 # Common working directory
 run
+
+# isolated shader-pack test run (Iris/Sodium jars, test pack)
+run-iris

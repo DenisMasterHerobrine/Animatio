@@ -16,7 +16,22 @@ public final class AnimatioNetwork {
     }
 
     public static void register(RegisterPayloadHandlersEvent event) {
-        event.registrar("1").playToClient(ControllerSyncPayload.TYPE, ControllerSyncPayload.STREAM_CODEC, AnimatioNetwork::handle);
+        var registrar = event.registrar("2");
+        registrar.playToClient(ControllerSyncPayload.TYPE, ControllerSyncPayload.STREAM_CODEC, AnimatioNetwork::handle);
+        registrar.playToClient(EntityModelPayload.TYPE, EntityModelPayload.STREAM_CODEC, AnimatioNetwork::handleModel);
+        registrar.playToClient(CameraViewPayload.TYPE, CameraViewPayload.STREAM_CODEC, (payload, context) -> {
+            dev.denismasterherobrine.animatio.common.ClientBridge bridge = dev.denismasterherobrine.animatio.common.ClientBridge.Holder.get();
+            if (bridge != null) bridge.cameraView(context.player().level().getEntity(payload.entityId()), payload.camera());
+        });
+        registrar.playToClient(ItemAnimationPayload.TYPE, ItemAnimationPayload.STREAM_CODEC, (payload, context) -> {
+            dev.denismasterherobrine.animatio.common.ClientBridge bridge = dev.denismasterherobrine.animatio.common.ClientBridge.Holder.get();
+            if (bridge != null) bridge.handleItemCommand(payload.id(), payload.time(), payload.command());
+        });
+    }
+
+    private static void handleModel(EntityModelPayload payload, IPayloadContext context) {
+        net.minecraft.world.entity.Entity entity = context.player().level().getEntity(payload.entityId());
+        if (entity != null) dev.denismasterherobrine.animatio.common.EntityModels.applyRemote(entity, payload.model());
     }
 
     private static void handle(ControllerSyncPayload payload, IPayloadContext context) {

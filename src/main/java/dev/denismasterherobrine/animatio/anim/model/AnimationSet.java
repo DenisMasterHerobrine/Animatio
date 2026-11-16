@@ -4,16 +4,18 @@ import dev.denismasterherobrine.animatio.api.playable.BlendSpace;
 import dev.denismasterherobrine.animatio.api.playback.TransitionTable;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Everything a controller needs from one model: skeleton, clips with their settings, named blend spaces,
- * the transition table and sockets. Immutable once built. A new instance is created on every resource reload;
- * controllers notice the new {@link #version()} and re-resolve their tracks.
+ * the transition table, sockets, cameras, lights and the look-at bone. Immutable once built. A new instance is
+ * created on every resource reload; controllers notice the new {@link #version()} and re-resolve their tracks.
  */
 public final class AnimationSet {
     private static final AtomicInteger NEXT_VERSION = new AtomicInteger(1);
@@ -24,6 +26,9 @@ public final class AnimationSet {
     private final Map<String, BlendSpace> blendSpaces;
     private final TransitionTable transitions;
     private final Map<String, Socket> sockets;
+    private final List<ModelCamera> cameras;
+    private final List<ModelLight> lights;
+    private final @Nullable LookConfig look;
     private final int version;
 
     private AnimationSet(Builder b) {
@@ -33,6 +38,9 @@ public final class AnimationSet {
         this.blendSpaces = Collections.unmodifiableMap(new LinkedHashMap<>(b.blendSpaces));
         this.transitions = new TransitionTable().putAll(b.transitions);
         this.sockets = Collections.unmodifiableMap(new LinkedHashMap<>(b.sockets));
+        this.cameras = List.copyOf(b.cameras);
+        this.lights = List.copyOf(b.lights);
+        this.look = b.look;
         this.version = NEXT_VERSION.getAndIncrement();
     }
 
@@ -77,6 +85,26 @@ public final class AnimationSet {
         return sockets;
     }
 
+    /** Cameras in the model (glTF {@code cameras} instanced by nodes). */
+    public List<ModelCamera> cameras() {
+        return cameras;
+    }
+
+    public @Nullable ModelCamera camera(String name) {
+        for (ModelCamera c : cameras) if (c.name().equals(name)) return c;
+        return null;
+    }
+
+    /** Punctual lights in the model ({@code KHR_lights_punctual}). */
+    public List<ModelLight> lights() {
+        return lights;
+    }
+
+    /** The procedural look-at bone, or {@code null}. */
+    public @Nullable LookConfig look() {
+        return look;
+    }
+
     public int version() {
         return version;
     }
@@ -88,6 +116,9 @@ public final class AnimationSet {
         private final Map<String, BlendSpace> blendSpaces = new LinkedHashMap<>();
         private final TransitionTable transitions = new TransitionTable();
         private final Map<String, Socket> sockets = new LinkedHashMap<>();
+        private final List<ModelCamera> cameras = new ArrayList<>();
+        private final List<ModelLight> lights = new ArrayList<>();
+        private @Nullable LookConfig look;
 
         private Builder(String name, Skeleton skeleton) {
             this.name = name;
@@ -114,6 +145,21 @@ public final class AnimationSet {
 
         public Builder socket(Socket socket) {
             sockets.put(socket.name(), socket);
+            return this;
+        }
+
+        public Builder cameras(List<ModelCamera> list) {
+            cameras.addAll(list);
+            return this;
+        }
+
+        public Builder lights(List<ModelLight> list) {
+            lights.addAll(list);
+            return this;
+        }
+
+        public Builder look(@Nullable LookConfig look) {
+            this.look = look;
             return this;
         }
 

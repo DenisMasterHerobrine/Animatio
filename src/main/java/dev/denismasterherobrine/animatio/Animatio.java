@@ -4,6 +4,7 @@ import com.mojang.logging.LogUtils;
 import dev.denismasterherobrine.animatio.common.AnimatioAttachments;
 import dev.denismasterherobrine.animatio.common.AnimatioCommand;
 import dev.denismasterherobrine.animatio.common.ControllerTicker;
+import dev.denismasterherobrine.animatio.common.EntityModels;
 import dev.denismasterherobrine.animatio.common.SyncManager;
 import dev.denismasterherobrine.animatio.data.ServerModelRepository;
 import dev.denismasterherobrine.animatio.net.AnimatioNetwork;
@@ -31,11 +32,15 @@ public class Animatio {
 
     public Animatio(IEventBus modBus) {
         AnimatioAttachments.register(modBus);
+        dev.denismasterherobrine.animatio.common.AnimatioComponents.register(modBus);
         modBus.addListener(AnimatioNetwork::register);
 
         IEventBus bus = NeoForge.EVENT_BUS;
         bus.addListener(Animatio::onServerTick);
         bus.addListener(Animatio::onStartTracking);
+        bus.addListener((PlayerEvent.PlayerLoggedInEvent e) -> selfModel(e.getEntity()));
+        bus.addListener((PlayerEvent.PlayerRespawnEvent e) -> selfModel(e.getEntity()));
+        bus.addListener((PlayerEvent.PlayerChangedDimensionEvent e) -> selfModel(e.getEntity()));
         bus.addListener(Animatio::onChunkSent);
         bus.addListener(Animatio::onServerStopped);
         bus.addListener(Animatio::onAddReloadListeners);
@@ -49,9 +54,15 @@ public class Animatio {
 
     private static void onStartTracking(PlayerEvent.StartTracking event) {
         Entity target = event.getTarget();
+        if (event.getEntity() instanceof ServerPlayer tracker) EntityModels.sendTo(tracker, target);
         if (event.getEntity() instanceof ServerPlayer player && target.hasData(AnimatioAttachments.CONTROLLER)) {
             SyncManager.sendSnapshot(target.getData(AnimatioAttachments.CONTROLLER), player);
         }
+    }
+
+    /** A player's own client learns its runtime model when it (re)enters a level. */
+    private static void selfModel(net.minecraft.world.entity.player.Player player) {
+        if (player instanceof ServerPlayer sp) EntityModels.sendTo(sp, sp);
     }
 
     private static void onChunkSent(ChunkWatchEvent.Sent event) {

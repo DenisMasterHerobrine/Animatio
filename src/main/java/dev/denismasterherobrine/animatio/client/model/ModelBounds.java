@@ -25,7 +25,7 @@ public final class ModelBounds {
         float[] out = {Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY,
                 Float.NEGATIVE_INFINITY, Float.NEGATIVE_INFINITY, Float.NEGATIVE_INFINITY};
         Skeleton sk = model.skeleton();
-        Pose pose = new Pose(sk.size());
+        Pose pose = new Pose(sk);
         float[] globals = new float[sk.size() * 16];
         float[] palette = new float[model.paletteSize() * 16];
 

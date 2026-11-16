@@ -31,7 +31,15 @@ public final class GltfModel {
      */
     public record Part(MeshData mesh, String materialName, int materialIndex, ModelDefinition.RenderTypeKind kind,
                        ResourceLocation texture, @Nullable ResourceLocation emissiveTexture, int color,
-                       boolean doubleSided, boolean fullBright, @Nullable ResourceLocation shader, int[] quads) {
+                       boolean doubleSided, boolean fullBright, @Nullable ResourceLocation shader, int[] quads,
+                       net.minecraft.client.renderer.RenderType[] renderTypeCache, boolean usesSkin) {
+        public Part(MeshData mesh, String materialName, int materialIndex, ModelDefinition.RenderTypeKind kind,
+                    ResourceLocation texture, @Nullable ResourceLocation emissiveTexture, int color,
+                    boolean doubleSided, boolean fullBright, @Nullable ResourceLocation shader, int[] quads) {
+            this(mesh, materialName, materialIndex, kind, texture, emissiveTexture, color, doubleSided, fullBright, shader, quads,
+                    new net.minecraft.client.renderer.RenderType[2], texture.equals(ModelDefinition.PLAYER_SKIN));
+        }
+
     }
 
     private final ResourceLocation id;
@@ -46,6 +54,7 @@ public final class GltfModel {
     private final int version;
     private final float[] restPalette;
     private final float[] cullCylinder;
+    private final int selfLight;
     private @Nullable Object gpuData;
 
     GltfModel(ResourceLocation id, ModelData data, AnimationSet animations, ModelDefinition definition, List<Part> parts,
@@ -68,11 +77,14 @@ public final class GltfModel {
         this.maxVertices = max;
         this.restPalette = computeRestPalette(data);
         this.cullCylinder = computeCullCylinder(bounds, rootTransform);
+        int light = 0;
+        for (var l : data.lights()) light = Math.max(light, dev.denismasterherobrine.animatio.client.render.ModelLights.level(l, definition));
+        this.selfLight = light;
     }
 
     private static float[] computeRestPalette(ModelData data) {
         Skeleton sk = data.skeleton();
-        Pose pose = new Pose(sk.size());
+        Pose pose = new Pose(sk);
         pose.setRest(sk);
         float[] globals = new float[sk.size() * 16];
         Mat4.computeGlobals(sk, pose, globals);
@@ -156,6 +168,11 @@ public final class GltfModel {
      */
     public float[] cullCylinder() {
         return cullCylinder;
+    }
+
+    /** Block light level (0..15) the model's own glTF lights give it; 0 without lights. */
+    public int selfLight() {
+        return selfLight;
     }
 
     /** GPU-side buffers created lazily by the GPU renderer (render thread only). */

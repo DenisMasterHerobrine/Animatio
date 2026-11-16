@@ -7,6 +7,7 @@ import dev.denismasterherobrine.animatio.api.playable.Playable;
 import dev.denismasterherobrine.animatio.client.model.ClientModelManager;
 import dev.denismasterherobrine.animatio.client.model.GltfModel;
 import dev.denismasterherobrine.animatio.client.render.AnimatedInstance;
+import dev.denismasterherobrine.animatio.client.render.ModelLights;
 import dev.denismasterherobrine.animatio.client.render.ModelRenderer;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.BlockEntityWithoutLevelRenderer;
@@ -18,24 +19,23 @@ import org.jetbrains.annotations.Nullable;
 import org.joml.Matrix4f;
 
 /**
- * Renders an item with a glTF model. Item stacks have nowhere to keep per-stack state, so all stacks of the item
- * share one client-side controller ({@link #controller()}): an ambient animation loops by default, and client code
- * can play clips on it (for example when the item is used).
+ * Renders an item with a glTF model. Every stack has its own animation state ({@link #controller(ItemStack)}): stacks
+ * carrying an {@code animatio:animation_id} component keep it wherever they go and receive animations played from
+ * the server ({@code AnimatioApi.playOnItem}); other stacks get state tied to the stack object. An ambient animation
+ * starts on each stack's first render. {@link #sharedState(boolean) sharedState(true)} restores one state for every stack.
  * <p>
  * Register through {@code IClientItemExtensions#getCustomRenderer}; the item model JSON must have the parent
  * {@code minecraft:builtin/entity} (or one that inherits it, such as {@code minecraft:item/chest}).
  */
 public class GltfItemRenderer extends BlockEntityWithoutLevelRenderer {
     private final ResourceLocation modelId;
-    private final ControllerImpl controller = new ControllerImpl(ControllerImpl.Side.CLIENT);
-    private final AnimatedInstance instance = new AnimatedInstance();
+    private final ItemAnimations.State shared = new ItemAnimations.State();
     private final @Nullable Playable ambient;
     private final Matrix4f root = new Matrix4f();
     private boolean fitToBlock = true;
-    private boolean started;
-    private @Nullable GltfModel bound;
+    private boolean sharedState;
 
-    /** @param ambient played (looping if the clip loops) when first rendered, or {@code null} */
+    /** @param ambient played (looping if the clip loops) when a stack is first rendered, or {@code null} */
     public GltfItemRenderer(ResourceLocation model, @Nullable Playable ambient) {
         super(Minecraft.getInstance().getBlockEntityRenderDispatcher(), Minecraft.getInstance().getEntityModels());
         this.modelId = model;
@@ -48,27 +48,39 @@ public class GltfItemRenderer extends BlockEntityWithoutLevelRenderer {
         return this;
     }
 
-    /** The controller shared by every stack of this item. Client side only. */
+    /** One animation state for all stacks of the item instead of one per stack. */
+    public GltfItemRenderer sharedState(boolean shared) {
+        this.sharedState = shared;
+        return this;
+    }
+
+    /** The animation controller of one stack (client side). */
+    public AnimationController controller(ItemStack stack) {
+        return sharedState ? shared.controller() : ItemAnimations.state(stack).controller();
+    }
+
+    /** The controller shared by every stack when {@link #sharedState(boolean)} is on. */
     public AnimationController controller() {
-        return controller;
+        return shared.controller();
     }
 
     @Override
     public void renderByItem(ItemStack stack, ItemDisplayContext context, PoseStack poseStack, MultiBufferSource buffers, int light, int overlay) {
         GltfModel model = ClientModelManager.INSTANCE.get(modelId);
         if (model == null) return;
-        if (bound != model) {
-            bound = model;
+        ItemAnimations.State state = sharedState ? shared : ItemAnimations.state(stack);
+        ControllerImpl controller = state.controller;
+        if (state.boundModel != model) {
+            state.boundModel = model;
             controller.bind(ClientModelManager.INSTANCE.animationSet(modelId));
         }
-        Minecraft mc = Minecraft.getInstance();
-        double now = mc.level != null ? (mc.level.getGameTime() + mc.getTimer().getGameTimeDeltaPartialTick(false)) / 20.0
-                : System.nanoTime() / 1e9;
+        double now = ItemAnimations.now();
         controller.update(now);
-        if (!started && ambient != null) {
-            started = true;
+        if (!state.ambientStarted && ambient != null) {
+            state.ambientStarted = true;
             controller.play(ambient);
         }
+        AnimatedInstance instance = state.instance;
         instance.prepare(controller, model, now, 0);
 
         root.identity().translate(0.5f, 0f, 0.5f);
@@ -80,7 +92,8 @@ public class GltfItemRenderer extends BlockEntityWithoutLevelRenderer {
         root.mul(model.rootTransform());
         poseStack.pushPose();
         poseStack.mulPose(root);
-        ModelRenderer.render(model, instance, poseStack, buffers, light, overlay, 0xFFFFFFFF, ModelRenderer.Context.OTHER);
+        ModelRenderer.render(model, instance, poseStack, buffers, ModelLights.light(model, instance, light), overlay, 0xFFFFFFFF,
+                ModelRenderer.Context.OTHER);
         poseStack.popPose();
     }
 }

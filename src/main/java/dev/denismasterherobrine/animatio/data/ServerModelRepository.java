@@ -68,11 +68,15 @@ public final class ServerModelRepository {
                 data = read(file);
             }
             if (data == null) {
+                file = ModelPaths.bbmodel(id);
+                data = read(file);
+            }
+            if (data == null) {
                 LOGGER.warn("Model {} was not found in any mod file ({}); server-side animation timing is unavailable", id, glb);
                 return Optional.empty();
             }
             ResourceLocation base = file;
-            ModelData model = GltfLoader.load(id.toString(), data, false, uri -> read(ModelPaths.relative(base, uri)));
+            ModelData model = ModelPaths.load(id.toString(), file.getPath(), data, false, uri -> read(ModelPaths.relative(base, uri)));
             ModelDefinition def = null;
             byte[] json = read(ModelPaths.definition(id));
             if (json != null) {

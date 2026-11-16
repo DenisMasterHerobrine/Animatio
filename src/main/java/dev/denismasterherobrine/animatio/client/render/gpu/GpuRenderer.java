@@ -34,7 +34,8 @@ public final class GpuRenderer {
 
     /** True when the GPU path can be used right now. */
     public static boolean isActive() {
-        return AnimatioClientConfig.gpuSkinning() && GpuShaders.defaultShader() != null && !IrisCompat.isShaderPackInUse();
+        return AnimatioClientConfig.gpuSkinning() && GpuShaders.defaultShader() != null && !IrisCompat.isShaderPackInUse()
+                && !AnimatioClientConfig.forceFeedbackSkinning();
     }
 
     /**
@@ -46,14 +47,16 @@ public final class GpuRenderer {
                                      int light, int overlay, int tint, ModelRenderer.Context context) {
         if (!FramePipeline.inPhase(context) || !isActive() || buffers instanceof OutlineBufferSource) return false;
         InstanceBatcher batcher = context == ModelRenderer.Context.ENTITY ? ENTITIES : BLOCK_ENTITIES;
-        if (!batcher.hasRoom(model.paletteSize(), model.parts().size())) return false;
+        float[] weights = instance.morphWeights();
+        var parts = model.parts();
+        if (parts.size() > MAX_GPU_PARTS || !batcher.hasRoom(model.paletteSize(), weights.length, parts.size())) return false;
         GpuModelData gpu = GpuModelData.get(model);
         if (gpu == null) return false;
 
-        int boneOffset = -1;
+        int boneOffset = -1, weightOffset = -1;
         boolean cpuParts = false;
-        var parts = model.parts();
-        for (int i = 0; i < parts.size(); i++) {
+        ResourceLocation skin = instance.skinTexture();
+        for (int i = 0, size = parts.size(); i < size; i++) {
             GltfModel.Part part = parts.get(i);
             if (part.emissiveTexture() != null) cpuParts = true;
             MaterialOverride override = instance.override(part.materialName());
@@ -70,14 +73,17 @@ public final class GpuRenderer {
                 continue;
             }
             if (boneOffset < 0) boneOffset = batcher.addBones(instance.palette(), model.paletteSize());
-            ResourceLocation texture = override.texture() != null ? override.texture() : part.texture();
-            batcher.add(shader, model, gpu, i, texture, !part.doubleSided(), pose.pose(),
+            if (weightOffset < 0 && weights.length > 0 && gpu.hasMorphs(i)) weightOffset = batcher.addMorphWeights(weights);
+            batcher.add(shader, gpu, i, MaterialResolver.texture(part, override, skin), !part.doubleSided(), pose.pose(),
                     MaterialResolver.light(part, override, light), overlay, color, override.emissive(),
-                    override.param0(), override.param1(), override.param2(), override.param3(), boneOffset);
+                    override.param0(), override.param1(), override.param2(), override.param3(), boneOffset, Math.max(0, weightOffset));
         }
         if (cpuParts) ModelRenderer.renderCpu(model, instance, pose, buffers, light, overlay, tint, GpuRenderer::onGpu, context);
         return true;
     }
+
+    /** Parts beyond this index are drawn on the CPU (the batch sort key holds 10 bits of part index). */
+    private static final int MAX_GPU_PARTS = 1024;
 
     /** Whether a part's base layer is drawn by the GPU path (translucent materials need vanilla sorting). */
     private static boolean onGpu(GltfModel.Part part, int color) {

@@ -1,6 +1,7 @@
 package dev.denismasterherobrine.animatio.client;
 
 import dev.denismasterherobrine.animatio.api.AnimatioApi;
+import dev.denismasterherobrine.animatio.api.AnimationController;
 import dev.denismasterherobrine.animatio.api.material.MaterialOverride;
 import dev.denismasterherobrine.animatio.client.model.ClientModelManager;
 import dev.denismasterherobrine.animatio.client.model.GltfModel;
@@ -13,6 +14,14 @@ import net.neoforged.neoforge.attachment.IAttachmentHolder;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
+import dev.denismasterherobrine.animatio.client.camera.CinematicCamera;
+import dev.denismasterherobrine.animatio.client.render.ModelLights;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Client-only API: material overrides, custom shaders, model access and bone positions.
@@ -66,5 +75,61 @@ public final class AnimatioClientApi {
         ControllerHolder holder = AnimatioApi.holder(owner);
         AnimatedInstance instance = AnimatedInstance.getIfPresent(holder);
         return instance != null && instance.bonePosition(holder, boneOrSocket, out, new Matrix4f());
+    }
+
+    // ------------------------------------------------------------------ items
+
+    /** The client-side animation controller of one item stack (its own state, see {@code GltfItemRenderer}). */
+    public static AnimationController itemController(net.minecraft.world.item.ItemStack stack) {
+        return dev.denismasterherobrine.animatio.client.item.ItemAnimations.state(stack).controller();
+    }
+
+    // ------------------------------------------------------------------ players
+
+    private static final Map<UUID, ResourceLocation> LOCAL_PLAYER_MODELS = new ConcurrentHashMap<>();
+
+    /**
+     * Show a player with a model on this client only (cosmetics, previews), or {@code null} to undo. A model set by
+     * the server ({@code AnimatioApi.setModel}) takes precedence.
+     */
+    public static void setPlayerModel(UUID player, @Nullable ResourceLocation model) {
+        if (model == null) LOCAL_PLAYER_MODELS.remove(player);
+        else LOCAL_PLAYER_MODELS.put(player, model);
+    }
+
+    public static @Nullable ResourceLocation localPlayerModel(UUID player) {
+        return LOCAL_PLAYER_MODELS.isEmpty() ? null : LOCAL_PLAYER_MODELS.get(player);
+    }
+
+    // ------------------------------------------------------------------ cameras and lights
+
+    /**
+     * Look through a glTF camera of an animated object (the camera node's name; any bone or socket works too) until
+     * {@link #stopCameraView()}: a cutscene keyed in Blender. Perspective cameras also set the field of view.
+     */
+    public static void startCameraView(IAttachmentHolder owner, String camera) {
+        CinematicCamera.start(owner, camera);
+    }
+
+    public static void stopCameraView() {
+        CinematicCamera.stop();
+    }
+
+    public static boolean isCameraViewActive() {
+        return CinematicCamera.isActive();
+    }
+
+    /**
+     * The model's {@code KHR_lights_punctual} lights in world space as of the last rendered frame, e.g. to feed a
+     * dynamic-lights mod. Each light also brightens its own model (see {@link ModelLights#level}).
+     */
+    public static List<ModelLights.WorldLight> lights(IAttachmentHolder owner) {
+        ControllerHolder holder = AnimatioApi.holder(owner);
+        AnimatedInstance instance = AnimatedInstance.getIfPresent(holder);
+        GltfModel model = instance != null ? instance.model() : null;
+        if (model == null) return List.of();
+        List<ModelLights.WorldLight> out = new ArrayList<>();
+        ModelLights.forEach(model, instance, holder.controller(), out::add);
+        return out;
     }
 }

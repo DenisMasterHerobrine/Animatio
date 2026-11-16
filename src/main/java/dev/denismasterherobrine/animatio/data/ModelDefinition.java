@@ -47,7 +47,11 @@ import java.util.Optional;
  */
 public record ModelDefinition(Map<String, ClipDef> clips, Map<String, BlendSpaceDef> blendSpaces,
                               TransitionsDef transitions, Map<String, SocketDef> sockets,
-                              Map<String, MaterialDef> materials, RenderDef render) {
+                              Map<String, MaterialDef> materials, RenderDef render, Optional<LookDef> look,
+                              Map<String, LightDef> lights) {
+
+    /** Texture id that stands for the rendered player's (or other owner's) skin, e.g. {@code "texture": "animatio:player_skin"}. */
+    public static final ResourceLocation PLAYER_SKIN = ResourceLocation.fromNamespaceAndPath("animatio", "player_skin");
 
     // ------------------------------------------------------------------ transitions
 
@@ -143,6 +147,28 @@ public record ModelDefinition(Map<String, ClipDef> clips, Map<String, BlendSpace
         ).apply(i, SocketDef::new));
     }
 
+    // ------------------------------------------------------------------ look-at and lights
+
+    /** {@code "look": {"bone": "head", "max_yaw": 75, "max_pitch": 60, "weight": 1}}: procedural head turning. */
+    public record LookDef(String bone, float maxYaw, float maxPitch, float weight) {
+        public static final Codec<LookDef> CODEC = RecordCodecBuilder.create(i -> i.group(
+                Codec.STRING.fieldOf("bone").forGetter(LookDef::bone),
+                Codec.floatRange(0f, 180f).optionalFieldOf("max_yaw", 75f).forGetter(LookDef::maxYaw),
+                Codec.floatRange(0f, 90f).optionalFieldOf("max_pitch", 60f).forGetter(LookDef::maxPitch),
+                Codec.floatRange(0f, 1f).optionalFieldOf("weight", 1f).forGetter(LookDef::weight)
+        ).apply(i, LookDef::new));
+    }
+
+    /**
+     * Per glTF light (by node name): {@code block_light} 0..15 is how much the light brightens its own model
+     * (Minecraft has no dynamic lights; by default it is derived from the light's intensity and colour).
+     */
+    public record LightDef(Optional<Integer> blockLight) {
+        public static final Codec<LightDef> CODEC = RecordCodecBuilder.create(i -> i.group(
+                Codec.intRange(0, 15).optionalFieldOf("block_light").forGetter(LightDef::blockLight)
+        ).apply(i, LightDef::new));
+    }
+
     // ------------------------------------------------------------------ materials and rendering
 
     /** How a material is drawn. {@code AUTO} derives it from the glTF alpha mode and emissive settings. */
@@ -187,9 +213,12 @@ public record ModelDefinition(Map<String, ClipDef> clips, Map<String, BlendSpace
             TransitionsDef.CODEC.optionalFieldOf("transitions", TransitionsDef.EMPTY).forGetter(ModelDefinition::transitions),
             Codec.unboundedMap(Codec.STRING, SocketDef.CODEC).optionalFieldOf("sockets", Map.of()).forGetter(ModelDefinition::sockets),
             Codec.unboundedMap(Codec.STRING, MaterialDef.CODEC).optionalFieldOf("materials", Map.of()).forGetter(ModelDefinition::materials),
-            RenderDef.CODEC.optionalFieldOf("render", RenderDef.DEFAULT).forGetter(ModelDefinition::render)
+            RenderDef.CODEC.optionalFieldOf("render", RenderDef.DEFAULT).forGetter(ModelDefinition::render),
+            LookDef.CODEC.optionalFieldOf("look").forGetter(ModelDefinition::look),
+            Codec.unboundedMap(Codec.STRING, LightDef.CODEC).optionalFieldOf("lights", Map.of()).forGetter(ModelDefinition::lights)
     ).apply(i, ModelDefinition::new));
 
     // Declared last: the nested records' static codecs read the codec fields above during initialisation.
-    public static final ModelDefinition EMPTY = new ModelDefinition(Map.of(), Map.of(), TransitionsDef.EMPTY, Map.of(), Map.of(), RenderDef.DEFAULT);
+    public static final ModelDefinition EMPTY = new ModelDefinition(Map.of(), Map.of(), TransitionsDef.EMPTY, Map.of(), Map.of(),
+            RenderDef.DEFAULT, Optional.empty(), Map.of());
 }
